@@ -123,6 +123,9 @@ else
 
   say "Gatekeeper assessment (this is what a downloader's Mac will do)"
   spctl -a -vvv -t install "$DMG"
+
+  say "Stapling the app inside the image too, so an offline first launch works"
+  "$DESKTOP/scripts/staple-app-in-dmg.sh" "$DMG"
 fi
 
 say "Staging the installer for the site"
