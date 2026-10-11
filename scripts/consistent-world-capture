@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+#
+# consistent-world-capture — push a prompt/log/command-result into Consistent World's raw capture
+# loop via the running gateway's POST /api/external-captures endpoint.
+#
+# Consistent World is the local operating folder / control station for AI work. This is
+# the bridge that lets any local tool or shell workflow feed the raw capture loop
+# without hand-writing curl. Captures land as `raw`; nothing is auto-promoted.
+#
+# Usage:
+#   consistent-world-capture [options]                 # capture --text or stdin
+#   consistent-world-capture run [options] -- CMD...   # run CMD, capture its output+exit
+#
+# Options:
+#   --source S         producer channel (default: shell)
+#                      e.g. shell | claude_code | codex | manus | openclaw | browser | webhook
+#   --text T           capture text; if omitted, read stdin
+#   --entity-id ID     attach directly to an entity (must be visible in workspace)
+#   --external-id ID   idempotency key within (workspace, source)
+#   --session-id ID    conversation/session id
+#   --provider P       model/provider that produced the text
+#   --cwd DIR          working directory hint (default: current dir)
+#   --repo-url URL     repository URL hint (feeds routing)
+#   --url URL          page/resource URL hint (feeds routing)
+#   --title T          short title
+#   --source-ref R     producer-stable reference (run id, message id, URL)
+#   --auto-route       run deterministic routing; attach only at high confidence
+#   --gateway URL      gateway base URL (default: $CONSISTENT_WORLD_GATEWAY or http://127.0.0.1:18800)
+#   --token TOK        bearer token (default: $CONSISTENT_WORLD_TOKEN; omitted if empty)
+#   --redact-env       affirm env vars are not sent (default behavior; never sends env)
+#   --json             print the raw JSON response instead of a human line
+#   --dry-run          print the request body and exit; never contacts the gateway
+#   -h, --help         show this help
+#
+# Safety: this tool never reads or sends environment variables, never attaches
+# files, and performs no destructive actions. It only sends the text/command
+# output you give it. Keep secrets out of what you pipe in.
+
+set -u
+
+PROG="consistent-world-capture"
+DEFAULT_GATEWAY="http://127.0.0.1:18800"
+
+usage() {
+  cat <<'EOF'
+consistent-world-capture — push a prompt/log/command-result into Consistent World's raw capture loop.
+
+Usage:
+  consistent-world-capture [options]                 # capture --text or stdin
+  consistent-world-capture run [options] -- CMD...   # run CMD, capture its output+exit
+
+Options:
+  --source S         producer channel (default: shell)
+                     e.g. shell | claude_code | codex | manus | openclaw | browser | webhook
+  --text T           capture text; if omitted, read stdin
+  --entity-id ID     attach directly to an entity (must be visible in workspace)
+  --external-id ID   idempotency key within (workspace, source)
+  --session-id ID    conversation/session id
+  --provider P       model/provider that produced the text
+  --cwd DIR          working directory hint (default: current dir)
+  --repo-url URL     repository URL hint (feeds routing)
+  --url URL          page/resource URL hint (feeds routing)
+  --title T          short title
+  --source-ref R     producer-stable reference (run id, message id, URL)
+  --auto-route       run deterministic routing; attach only at high confidence
+  --gateway URL      gateway base URL (default: $CONSISTENT_WORLD_GATEWAY or http://127.0.0.1:18800)
+  --token TOK        bearer token (default: $CONSISTENT_WORLD_TOKEN; omitted if empty)
+  --redact-env       affirm env vars are not sent (default; this tool never sends env)
+  --json             print the raw JSON response instead of a human line
+  --dry-run          print the request body and exit; never contacts the gateway
+  -h, --help         show this help
+
+Safety: never reads or sends environment variables, never attaches files, no
+destructive actions. It only sends the text/command output you give it.
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$PROG" "$1" >&2
+  exit "${2:-1}"
+}
+
+# require_value FLAG REMAINING NEXT
+# Fail clearly when an option that needs a value has none — either nothing
+# follows it, or the next token is another option (starts with '-'). Called as
+# `require_value "$1" "$#" "${2:-}"` from the parse loop.
+require_value() {
+  [ "$2" -ge 2 ] || die "$1 requires a value" 2
+  case "$3" in
+    -*) die "$1 requires a value" 2 ;;
+  esac
+}
+
+# ── JSON string escaping ──────────────────────────────────────────────────────
+# Reads stdin, strips control chars that would produce invalid JSON (keeping tab,
+# LF, CR), and emits a JSON-escaped string WITHOUT surrounding quotes. Portable:
+# uses only tr + awk.
+json_escape_stdin() {
+  tr -d '\000-\010\013\014\016-\037' | awk '
+    function esc(s) {
+      gsub(/\\/, "\\\\", s)
+      gsub(/"/, "\\\"", s)
+      gsub(/\t/, "\\t", s)
+      gsub(/\r/, "\\r", s)
+      return s
+    }
+    { if (NR > 1) printf "\\n"; printf "%s", esc($0) }
+  '
+}
+
+json_escape_str() { printf '%s' "$1" | json_escape_stdin; }
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+MODE="capture"
+if [ "${1:-}" = "run" ]; then
+  MODE="run"
+  shift
+fi
+
+SOURCE="shell"
+TEXT=""
+TEXT_SET=0
+ENTITY_ID=""
+EXTERNAL_ID=""
+SESSION_ID=""
+PROVIDER=""
+CWD="$(pwd)"
+REPO_URL=""
+URL=""
+TITLE=""
+SOURCE_REF=""
+AUTO_ROUTE=0
+GATEWAY="${CONSISTENT_WORLD_GATEWAY:-$DEFAULT_GATEWAY}"
+TOKEN="${CONSISTENT_WORLD_TOKEN:-}"
+OUTPUT="human"
+DRY_RUN=0
+CMD=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source) require_value "$1" "$#" "${2:-}"; SOURCE="$2"; shift 2 ;;
+    --text) require_value "$1" "$#" "${2:-}"; TEXT="$2"; TEXT_SET=1; shift 2 ;;
+    --entity-id) require_value "$1" "$#" "${2:-}"; ENTITY_ID="$2"; shift 2 ;;
+    --external-id) require_value "$1" "$#" "${2:-}"; EXTERNAL_ID="$2"; shift 2 ;;
+    --session-id) require_value "$1" "$#" "${2:-}"; SESSION_ID="$2"; shift 2 ;;
+    --provider) require_value "$1" "$#" "${2:-}"; PROVIDER="$2"; shift 2 ;;
+    --cwd) require_value "$1" "$#" "${2:-}"; CWD="$2"; shift 2 ;;
+    --repo-url) require_value "$1" "$#" "${2:-}"; REPO_URL="$2"; shift 2 ;;
+    --url) require_value "$1" "$#" "${2:-}"; URL="$2"; shift 2 ;;
+    --title) require_value "$1" "$#" "${2:-}"; TITLE="$2"; shift 2 ;;
+    --source-ref) require_value "$1" "$#" "${2:-}"; SOURCE_REF="$2"; shift 2 ;;
+    --auto-route) AUTO_ROUTE=1; shift ;;
+    --gateway) require_value "$1" "$#" "${2:-}"; GATEWAY="$2"; shift 2 ;;
+    --token) require_value "$1" "$#" "${2:-}"; TOKEN="$2"; shift 2 ;;
+    --redact-env) shift ;; # default behavior; accepted for clarity
+    --json) OUTPUT="json"; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; CMD=("$@"); break ;;
+    -*) die "unknown option: $1" 2 ;;
+    *) die "unexpected argument: $1 (did you mean 'run ... -- $1'?)" 2 ;;
+  esac
+done
+
+[ -n "$SOURCE" ] || die "--source must not be empty"
+
+# ── Gather text ───────────────────────────────────────────────────────────────
+META_EXTRA=""
+
+if [ "$MODE" = "run" ]; then
+  [ "${#CMD[@]}" -gt 0 ] || die "run mode requires a command after '--'"
+  OUTFILE="$(mktemp "${TMPDIR:-/tmp}/consistent-world-capture.XXXXXX")"
+  trap 'rm -f "$OUTFILE" "${BODYFILE:-}"' EXIT
+  STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Stream combined stdout/stderr to the terminal (stderr) AND capture it. The
+  # wrapper's own stdout is reserved for the capture result / JSON / dry-run body.
+  "${CMD[@]}" 2>&1 | tee "$OUTFILE" >&2
+  EXIT_CODE="${PIPESTATUS[0]}"
+  COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  TEXT="$(cat "$OUTFILE")"
+  TEXT_SET=1
+  CMD_STR="${CMD[*]}"
+  # A command can legitimately produce no output; keep raw_text non-empty so the
+  # capture still records the command and its exit code.
+  [ -n "$TEXT" ] || TEXT="\$ ${CMD_STR}"$'\n'"(exit ${EXIT_CODE}, no output)"
+  [ -n "$TITLE" ] || TITLE="run: $CMD_STR"
+  [ -n "$SOURCE_REF" ] || SOURCE_REF="$CMD_STR"
+  META_EXTRA="\"command\":\"$(json_escape_str "$CMD_STR")\",\"exitCode\":${EXIT_CODE},\"startedAt\":\"${STARTED_AT}\",\"completedAt\":\"${COMPLETED_AT}\","
+else
+  if [ "$TEXT_SET" -eq 0 ]; then
+    if [ -t 0 ]; then
+      die "no --text given and stdin is a terminal (pipe input or pass --text)"
+    fi
+    TEXT="$(cat)"
+    TEXT_SET=1
+  fi
+fi
+
+[ -n "$TEXT" ] || die "capture text is empty"
+
+# ── Build request body ────────────────────────────────────────────────────────
+BODY="{"
+BODY="${BODY}\"raw_text\":\"$(json_escape_str "$TEXT")\","
+BODY="${BODY}\"source\":\"$(json_escape_str "$SOURCE")\","
+[ -n "$ENTITY_ID" ]   && BODY="${BODY}\"entity_id\":\"$(json_escape_str "$ENTITY_ID")\","
+[ -n "$EXTERNAL_ID" ] && BODY="${BODY}\"external_id\":\"$(json_escape_str "$EXTERNAL_ID")\","
+[ -n "$SESSION_ID" ]  && BODY="${BODY}\"session_id\":\"$(json_escape_str "$SESSION_ID")\","
+[ -n "$PROVIDER" ]    && BODY="${BODY}\"provider\":\"$(json_escape_str "$PROVIDER")\","
+[ -n "$CWD" ]         && BODY="${BODY}\"cwd\":\"$(json_escape_str "$CWD")\","
+[ -n "$REPO_URL" ]    && BODY="${BODY}\"repo_url\":\"$(json_escape_str "$REPO_URL")\","
+[ -n "$URL" ]         && BODY="${BODY}\"url\":\"$(json_escape_str "$URL")\","
+[ -n "$TITLE" ]       && BODY="${BODY}\"title\":\"$(json_escape_str "$TITLE")\","
+[ -n "$SOURCE_REF" ]  && BODY="${BODY}\"source_ref\":\"$(json_escape_str "$SOURCE_REF")\","
+[ "$AUTO_ROUTE" -eq 1 ] && BODY="${BODY}\"auto_route\":true,"
+if [ -n "$META_EXTRA" ]; then
+  # Trim the trailing comma inside the metadata object.
+  BODY="${BODY}\"metadata\":{${META_EXTRA%,}},"
+fi
+BODY="${BODY%,}}"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "$BODY"
+  [ "$MODE" = "run" ] && exit "${EXIT_CODE:-0}"
+  exit 0
+fi
+
+# ── POST to the gateway ───────────────────────────────────────────────────────
+command -v curl >/dev/null 2>&1 || die "curl is required but not found"
+
+BODYFILE="$(mktemp "${TMPDIR:-/tmp}/consistent-world-capture-body.XXXXXX")"
+[ "$MODE" = "run" ] || trap 'rm -f "$BODYFILE"' EXIT
+printf '%s' "$BODY" > "$BODYFILE"
+
+CURL_ARGS=(-sS -X POST "${GATEWAY%/}/api/external-captures"
+  -H "content-type: application/json"
+  --data-binary "@$BODYFILE"
+  -w '\n%{http_code}')
+[ -n "$TOKEN" ] && CURL_ARGS=(-H "Authorization: Bearer $TOKEN" "${CURL_ARGS[@]}")
+
+if ! RESP="$(curl "${CURL_ARGS[@]}" 2>/dev/null)"; then
+  # Non-zero curl exit: connection refused, DNS, timeout, etc.
+  MSG="Consistent World gateway unreachable at ${GATEWAY} (is it running?)"
+  if [ "$MODE" = "run" ]; then
+    printf '%s: %s\n' "$PROG" "$MSG" >&2
+    exit "${EXIT_CODE:-0}"
+  fi
+  die "$MSG"
+fi
+
+HTTP_CODE="$(printf '%s' "$RESP" | tail -n1)"
+BODY_RESP="$(printf '%s' "$RESP" | sed '$d')"
+
+if [ "$HTTP_CODE" -ge 400 ] 2>/dev/null || [ -z "$HTTP_CODE" ]; then
+  MSG="gateway returned HTTP ${HTTP_CODE:-?}: ${BODY_RESP}"
+  if [ "$MODE" = "run" ]; then
+    printf '%s: %s\n' "$PROG" "$MSG" >&2
+    exit "${EXIT_CODE:-0}"
+  fi
+  die "$MSG"
+fi
+
+if [ "$OUTPUT" = "json" ]; then
+  printf '%s\n' "$BODY_RESP"
+else
+  CAP_ID="$(printf '%s' "$BODY_RESP" | grep -Eo '"id":"[^"]*"' | head -1 | sed 's/"id":"//; s/"$//')"
+  EXISTING="$(printf '%s' "$BODY_RESP" | grep -Eo '"existing":(true|false)' | head -1 | sed 's/"existing"://')"
+  APPLIED="$(printf '%s' "$BODY_RESP" | grep -Eo '"applied":(true|false)' | head -1 | sed 's/"applied"://')"
+  STATE="created"
+  [ "$EXISTING" = "true" ] && STATE="existing"
+  LINE="captured ${CAP_ID:-?} (${STATE}) source=${SOURCE}"
+  if [ "$APPLIED" = "true" ]; then
+    ENT="$(printf '%s' "$BODY_RESP" | grep -Eo '"entity_id":"[^"]*"' | head -1 | sed 's/"entity_id":"//; s/"$//')"
+    [ -n "$ENT" ] && LINE="${LINE} routed→${ENT}"
+  fi
+  printf '%s\n' "$LINE"
+fi
+
+# In run mode, always return the wrapped command's exit code.
+[ "$MODE" = "run" ] && exit "${EXIT_CODE:-0}"
+exit 0

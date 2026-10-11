@@ -1,0 +1,90 @@
+# Consistent CEO with a separate SurrealDB server.
+#
+#   docker compose up --build
+#
+# Most people want the single container instead (embedded database, see the
+# Dockerfile header). This stack is for when the database should be its own
+# service. Brings up:
+#   - surrealdb     Surreal v2 (matches the client crate); persistent volume
+#   - gateway       Consistent CEO gateway, talks to surrealdb + host Ollama
+#
+# Ollama runs on the HOST, not in the compose. The gateway reaches it via
+# host.docker.internal (mac/windows) or via your LAN IP on Linux.
+#
+# To plug in cloud LLM keys for non-local tiers, export them in your shell
+# before `up` (compose forwards them via the env: blocks below) — they're
+# read by the [llm.providers.*] api_key_env lookups inside the gateway.
+
+services:
+  surrealdb:
+    # Surreal v2 — must match the surrealdb crate version pinned in Cargo.toml.
+    image: surrealdb/surrealdb:v2.3.10
+    container_name: consistent-world-surrealdb
+    restart: unless-stopped
+    # Run as root so the rocksdb data path under the named volume is writable.
+    # Anonymous Docker named volumes are root-owned at creation; Surreal's
+    # bundled `surrealdb` user (uid 1000) otherwise can't initialise the store.
+    user: "0:0"
+    command:
+      - start
+      - --user
+      - root
+      - --pass
+      - root
+      - --bind
+      - 0.0.0.0:8000
+      - rocksdb:/data/consistent_world.db
+    volumes:
+      - surreal_data:/data
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "http://localhost:8000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - consistent-world
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: consistent-world-gateway
+    restart: unless-stopped
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    ports:
+      # This computer only. The gateway generates its own machine token, which
+      # suits one person's machine; for a server others reach, set
+      # GATEWAY_AUTH_TOKEN and CONSISTENT_WORLD_PROVISION_TOKEN=0 instead.
+      - "127.0.0.1:18800:18800"
+    environment:
+      CONSISTENT_WORLD_BIND: "0.0.0.0"
+      CONSISTENT_WORLD_PORT: "18800"
+      SURREAL_URL: "ws://surrealdb:8000"
+      SURREAL_USER: "root"
+      SURREAL_PASS: "root"
+      SURREAL_NS: "consistent-world"
+      SURREAL_DB: "main"
+      # Forward cloud LLM keys from your shell if set. Unset is fine — every
+      # tier defaults to Ollama in docker/consistent_world.toml.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      # On Linux this needs your host's LAN IP instead of host.docker.internal.
+      OLLAMA_HOST: "${OLLAMA_HOST:-http://host.docker.internal:11434}"
+    extra_hosts:
+      # Allows the Linux daemon to resolve host.docker.internal (no-op on mac/win).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - consistent_world_state:/var/lib/consistent-world
+    networks:
+      - consistent-world
+
+volumes:
+  surreal_data:
+  consistent_world_state:
+
+networks:
+  consistent-world:
+    driver: bridge

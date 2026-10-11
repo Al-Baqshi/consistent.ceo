@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/v2/tauri.config.json",
+  "bundle": {
+    "externalBin": [
+      "binaries/consistent-world",
+      "binaries/consistent-dictate",
+      "binaries/consistent-whisper"
+    ]
+  }
+}

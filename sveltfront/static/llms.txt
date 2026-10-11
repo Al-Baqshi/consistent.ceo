@@ -1,0 +1,46 @@
+# Consistent CEO
+
+> The local-first operating system for missions and entities. Consistent CEO
+> (consistent.ceo) is a persistent, evidence-backed operating graph for people who
+> run things — founders, operators, and agencies. Businesses, projects, goals,
+> people, files, approvals, and memories are first-class objects, not incidental
+> prompt context, and AI pushes the work forward continuously under explicit human
+> oversight. Written in Rust, self-hosted, open source.
+
+## Naming
+
+- The product is **Consistent CEO**, at **https://consistent.ceo**. Short form: "Consistent".
+- "Consistent World" is a legacy name. It survives only in internal identifiers
+  (Rust crate names `consistent-world-*`, the `~/.consistent-world/` config
+  directory, database namespaces, and app bundle identifiers) and in archived
+  planning documents. It is not the product name.
+
+## What it is not
+
+Not a general AI assistant, not a coding agent, not a chat wrapper. Chat is one
+surface; the product is the world model underneath it and the governance around it.
+
+## The core promise: evidence-backed execution
+
+Every consequential claim resolves to a citation — the entity registry, stored
+memory, or a cached external source. Every consequential action passes a policy
+gate (auto-allow, require approval, or deny). Claims carry visible evidence states:
+Verified, Observed, Inferred, or Unverified. Only Verified and Observed claims may
+trigger side effects, and only under policy. The system is built to behave as an
+adversarial validator rather than a cheerleader: it challenges assumptions, asks
+instead of guessing, and refuses to fabricate.
+
+## Surfaces
+
+- Gateway (Rust) — the server; embeds and serves the web dashboard, default `http://127.0.0.1:18800`
+- Web dashboard (SvelteKit SPA) — missions, entities, tasks, approvals, chat, voice
+- Desktop app (Tauri) — macOS/Windows/Linux, with dictation and text injection
+- Mobile app (Expo) — capture on the go
+- iOS companion app (Xcode)
+
+## Docs
+
+- Vision and category: /docs/VISION.md
+- Architecture, crate layout, request flow, data model: /ARCHITECTURE.md
+- Roadmap: /docs/ROADMAP.md
+- Getting started: /README.md

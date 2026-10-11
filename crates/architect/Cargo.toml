@@ -1,0 +1,24 @@
+[package]
+name = "consistent-world-architect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "consistent_world_architect"
+path = "src/lib.rs"
+
+[dependencies]
+consistent-world-common = { path = "../common" }
+tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+surrealdb.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

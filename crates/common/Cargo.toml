@@ -1,0 +1,21 @@
+[package]
+name = "consistent-world-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+# `platform`: spawning children that read their prompt from stdin, and the
+# base64 PowerShell's `-EncodedCommand` takes.
+tokio.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

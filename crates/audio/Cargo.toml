@@ -1,0 +1,17 @@
+[package]
+name = "consistent-world-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+cpal.workspace = true
+rubato.workspace = true
+tokio-tungstenite.workspace = true
+base64.workspace = true

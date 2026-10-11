@@ -1,0 +1,31 @@
+[package]
+name = "consistent-world-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+consistent-world-common = { path = "../common" }
+consistent-world-plugins = { path = "../plugins" }
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+walkdir = "2"
+# Drive chromiumoxide on tokio (the runtime the rest of the app uses) instead of the
+# default async-std runtime: avoids a second executor + reactor in-process and gives us
+# `tokio::process::Child::start_kill()`, which is synchronous and therefore usable from `Drop`
+# to guarantee the child Chrome process dies with the tool.
+chromiumoxide = { version = "0.7", default-features = false, features = [
+    "tokio-runtime",
+    "bytes",
+] }
+base64.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }

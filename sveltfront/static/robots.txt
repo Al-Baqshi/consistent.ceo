@@ -1,0 +1,9 @@
+# Consistent CEO — https://consistent.ceo
+#
+# Crawling is intentionally left open rather than blocked here: the workspace
+# routes carry a per-page `noindex` (see $lib/components/Seo.svelte), and a
+# crawler has to be allowed to fetch a page in order to see that directive.
+User-agent: *
+Disallow:
+
+Sitemap: https://consistent.ceo/sitemap.xml

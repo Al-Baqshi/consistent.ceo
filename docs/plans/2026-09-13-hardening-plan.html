@@ -1,0 +1,795 @@
+<title>Gateway Hardening Plan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #F4F6F6;
+    --surface: #FFFFFF;
+    --surface-sunk: #EDF1F1;
+    --ink: #131E1E;
+    --ink-soft: #53615F;
+    --ink-faint: #7D8A88;
+    --rule: #D5DCDB;
+    --rule-soft: #E5EAE9;
+    --accent: #11616F;
+    --accent-soft: #E0EDEF;
+    --crit: #8F2F3C;
+    --warn: #8C6117;
+    --ok: #37705C;
+
+    --display: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+    --body: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0F1414;
+      --surface: #161D1E;
+      --surface-sunk: #1B2324;
+      --ink: #E7EDEC;
+      --ink-soft: #9AA7A5;
+      --ink-faint: #7A8786;
+      --rule: #2B3536;
+      --rule-soft: #212A2B;
+      --accent: #56AAB7;
+      --accent-soft: #163036;
+      --crit: #D98A94;
+      --warn: #D2A44F;
+      --ok: #6FB196;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0F1414;
+    --surface: #161D1E;
+    --surface-sunk: #1B2324;
+    --ink: #E7EDEC;
+    --ink-soft: #9AA7A5;
+    --ink-faint: #7A8786;
+    --rule: #2B3536;
+    --rule-soft: #212A2B;
+    --accent: #56AAB7;
+    --accent-soft: #163036;
+    --crit: #D98A94;
+    --warn: #D2A44F;
+    --ok: #6FB196;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 820px;
+    margin: 0 auto;
+    padding-inline: 22px;
+    padding-block: 56px 88px;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .eyebrow {
+    font-family: var(--display);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.1rem, 6vw, 3.1rem);
+    line-height: 1.06;
+    letter-spacing: -0.017em;
+    text-wrap: balance;
+    margin: 0 0 20px;
+  }
+
+  .standfirst {
+    font-size: 1.16rem;
+    line-height: 1.56;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0 0 26px;
+  }
+
+  .masthead-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 26px;
+    align-items: baseline;
+    padding-block: 16px;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--display);
+    font-size: 12.5px;
+    letter-spacing: 0.02em;
+    color: var(--ink-soft);
+  }
+
+  .masthead-meta b {
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .masthead-meta code { font-family: var(--mono); font-size: 11.5px; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  /* ---------- section furniture ---------- */
+
+  section { margin-top: 52px; }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.42rem;
+    letter-spacing: -0.008em;
+    margin: 0 0 6px;
+  }
+
+  .section-note {
+    color: var(--ink-soft);
+    font-size: 0.97rem;
+    max-width: 64ch;
+    margin: 0 0 24px;
+  }
+
+  p { margin: 0 0 14px; }
+  p:last-child { margin-bottom: 0; }
+
+  code, .mono { font-family: var(--mono); font-size: 0.855em; }
+
+  code {
+    background: var(--surface-sunk);
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: var(--ink);
+  }
+
+  /* ---------- the four requirements ---------- */
+
+  .reqs { display: grid; gap: 1px; background: var(--rule-soft); border-block: 1px solid var(--rule); }
+  .req { background: var(--surface); padding: 15px 18px; display: flex; gap: 16px; align-items: baseline; }
+  .req-key {
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    flex: 0 0 84px;
+  }
+  .req-text { font-size: 0.98rem; }
+  .req-text b { font-weight: 600; }
+
+  /* ---------- corrections table ---------- */
+
+  .scroller { overflow-x: auto; border-block: 1px solid var(--rule); }
+
+  table { border-collapse: collapse; width: 100%; min-width: 560px; background: var(--surface); }
+
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--rule-soft);
+    font-size: 0.93rem;
+    line-height: 1.5;
+  }
+
+  tr:last-child td { border-bottom: 0; }
+
+  th {
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-block: 11px;
+  }
+
+  td:first-child { width: 34%; color: var(--ink-soft); }
+  .verdict { font-family: var(--display); font-weight: 600; font-size: 0.86rem; letter-spacing: 0.01em; }
+  .verdict.no { color: var(--ok); }
+  .verdict.worse { color: var(--crit); }
+
+  /* ---------- figure ---------- */
+
+  figure { margin: 0; }
+
+  figure svg {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 14px 8px;
+    box-sizing: border-box;
+  }
+
+  figcaption {
+    margin-top: 12px;
+    font-size: 0.9rem;
+    color: var(--ink-soft);
+    max-width: 64ch;
+  }
+
+  /* ---------- phase spine ---------- */
+
+  .phase {
+    display: grid;
+    grid-template-columns: 62px 1fr;
+    gap: 0 22px;
+    padding-top: 26px;
+    margin-top: 26px;
+    border-top: 1px solid var(--rule);
+  }
+
+  .phase:first-of-type,
+  .phase:nth-of-type(2) { border-top: 2px solid var(--ok); }
+  .phase:first-of-type .phase-num,
+  .phase:nth-of-type(2) .phase-num { color: var(--ok); }
+  .phase:nth-of-type(3) .phase-num { color: var(--accent); }
+
+  .phase-num {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 2.5rem;
+    line-height: 0.9;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-faint);
+  }
+
+
+  .phase-start {
+    display: block;
+    font-family: var(--display);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ok);
+    margin-top: 7px;
+    line-height: 1.3;
+  }
+
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.22rem;
+    letter-spacing: -0.006em;
+    margin: 0 0 4px;
+    text-wrap: balance;
+  }
+
+  .theme {
+    font-size: 0.96rem;
+    color: var(--ink-soft);
+    font-style: italic;
+    margin: 0 0 18px;
+  }
+
+  .block { margin-bottom: 16px; }
+  .block:last-child { margin-bottom: 0; }
+
+  .label {
+    font-family: var(--display);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 6px;
+  }
+
+  .block p, .block li { font-size: 0.97rem; }
+
+  ul { margin: 0; padding-left: 19px; }
+  li { margin-bottom: 7px; }
+  li:last-child { margin-bottom: 0; }
+  li::marker { color: var(--ink-faint); }
+
+  .gate {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 3px 3px 0;
+    padding: 13px 16px;
+  }
+
+  .gate .label { color: var(--accent); }
+
+  .effort {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    font-family: var(--display);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    background: var(--surface-sunk);
+    border-radius: 999px;
+    padding: 5px 12px;
+    margin-top: 4px;
+  }
+
+  .effort span { color: var(--ink-faint); font-weight: 500; letter-spacing: 0.02em; text-transform: none; }
+
+  .caution { color: var(--warn); }
+
+  /* ---------- command block ---------- */
+
+  pre {
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 15px 16px;
+    overflow-x: auto;
+    margin: 0 0 16px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--ink);
+  }
+
+  pre .c { color: var(--ink-faint); }
+
+  .outscope {
+    border-top: 1px solid var(--rule);
+    margin-top: 46px;
+    padding-top: 22px;
+    font-size: 0.95rem;
+    color: var(--ink-soft);
+  }
+
+  @media (max-width: 540px) {
+    .phase { grid-template-columns: 1fr; gap: 0; }
+    .phase-num { font-size: 1.6rem; margin-bottom: 8px; }
+    .phase-start { display: inline; margin-left: 10px; font-size: 9.5px; }
+    .req { flex-direction: column; gap: 5px; }
+    .req-key { flex: none; }
+  }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Consistent CEO · gateway remediation</p>
+  <h1>Gateway Hardening Plan</h1>
+  <p class="standfirst">Seven phases, each one a branch off <code>main</code> that compiles, passes the full test suite, and is releasable on its own. Ship them in order: every phase makes the next one either safer or cheaper.</p>
+
+  <div class="masthead-meta">
+    <span><b>Verified against</b> <code>8bc455ae</code></span>
+    <span><b>Date</b> 2026-09-13</span>
+    <span><b>Status</b> Phases 1–2 landed · <code>ab489569</code></span>
+    <span><b>Diagnosis</b> <a href="https://claude.ai/code/artifact/a0e4ebcb-b20f-4e5d-8ff5-9880c98f4681">architecture review</a></span>
+  </div>
+
+  <section>
+    <h2>The goal</h2>
+    <p class="section-note">The product's promise is unattended execution: loops pick up work, run a real coding agent, and report evidence with nobody watching. That promise has exactly four structural requirements, and none of them is fully met today.</p>
+
+    <div class="reqs">
+      <div class="req">
+        <div class="req-key">Liveness</div>
+        <div class="req-text"><b>No loop can stop silently.</b> A dead loop is indistinguishable from an idle one — the gateway keeps answering <code>/health</code> either way.</div>
+      </div>
+      <div class="req">
+        <div class="req-key">Freshness</div>
+        <div class="req-text"><b>No loop acts on stale state.</b> Read, release, await, write-by-position is the shape of every concurrency bug in this tree.</div>
+      </div>
+      <div class="req">
+        <div class="req-key">Durability</div>
+        <div class="req-text"><b>Nothing deletes data it has not read.</b> A failed read must never be laundered into a delete.</div>
+      </div>
+      <div class="req">
+        <div class="req-key">Singularity</div>
+        <div class="req-text"><b>One definition per rule.</b> A rule written in four places is four rules that will drift apart.</div>
+      </div>
+    </div>
+
+    <p style="margin-top:22px">Phases 1–4 buy those four properties. Phases 5–7 remove the structural reasons they were easy to violate in the first place.</p>
+  </section>
+
+  <section>
+    <h2>Four corrections to the review first</h2>
+    <p class="section-note">The review was right about the shape of the problem and wrong in four details. A plan built on bad premises fixes the wrong things, so these are settled before the phases start.</p>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>The review claimed</th><th>What the code actually does</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Reminders double-fire</td>
+            <td><span class="verdict no">Not true.</span> <code>reminders.rs:266-296</code> scans, marks <code>reminder_fired</code>, and completes under a single write guard — atomic within a process. The real defect is narrower: <code>metadata_fired</code> reads <code>as_bool()</code> while <code>chat_tools.rs:1404</code> writes the string <code>"false"</code>. Harmless today, breaks the day anything writes <code>"true"</code>. → Phase 7.</td>
+          </tr>
+          <tr>
+            <td>Heartbeat beats double-run</td>
+            <td><span class="verdict no">Mostly not true.</span> <code>heartbeat_store.rs:263</code> claims a beat with a conditional <code>UPDATE … WHERE lease_until IS NONE OR lease_until &lt; $now</code> — genuinely atomic. The gap is a fixed ten-minute lease that is never renewed; a longer dispatch gets re-fired. → Phase 7.</td>
+          </tr>
+          <tr>
+            <td>The mission engine dies permanently on its third restart</td>
+            <td><span class="verdict worse">Worse than stated.</span> No such counter exists anywhere. All nine loops are spawned with a bare <code>tokio::spawn</code> whose handle is discarded. One panic kills that loop for the life of the process, with no restart and nothing user-visible. → Phase 1, now the highest-severity item.</td>
+          </tr>
+          <tr>
+            <td>Four disagreeing mission tallies</td>
+            <td><span class="verdict no">One canonical helper</span> — <code>derive_mission_task_counts</code> at <code>orchestrator.rs:50</code>. But eighteen other sites filter tasks by <code>mission_id</code> inline, so it is canonical in name only. → Phase 7.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why this order</h2>
+    <p class="section-note">The sequence is not a priority list — each arrow is a real handoff. Phase 2 can be attempted first, but its mistakes would be invisible until Phase 1 lands.</p>
+
+    <figure>
+      <svg viewBox="0 0 760 540" role="img" aria-label="The seven phases in sequence, the first two landed, top to bottom: process cannot stop silently; one way to move a task; nothing deletes blindly; one store layer; compile once; state.rs split; one rule one place. Each arrow is labelled with what that phase hands to the next. A bracket on the right shows Phase 2 handing update_task to Phase 6.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <polygon points="0,1 10,5 0,9" fill="currentColor"/>
+          </marker>
+          <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <polygon points="0,1 10,5 0,9" fill="var(--accent)"/>
+          </marker>
+        </defs>
+
+        <!-- phase 1 -->
+        <rect x="16" y="16" width="250" height="44" rx="3" fill="none" stroke="var(--ok)" stroke-width="1.6"/>
+        <text x="34" y="44" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="15" font-weight="700" fill="var(--ok)">1</text>
+        <text x="56" y="43" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="12.5" fill="currentColor">Process cannot stop silently</text>
+
+        <!-- phase 2 -->
+        <rect x="16" y="88" width="250" height="44" rx="3" fill="none" stroke="var(--ok)" stroke-width="1.6"/>
+        <text x="34" y="116" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="15" font-weight="700" fill="var(--ok)">2</text>
+        <text x="56" y="115" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="12.5" fill="currentColor">One way to move a task</text>
+
+        <!-- phase 3 -->
+        <rect x="16" y="160" width="250" height="44" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+        <text x="34" y="188" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="15" font-weight="700" fill="var(--accent)">3</text>
+        <text x="56" y="187" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="12.5" fill="currentColor">Nothing deletes blindly</text>
+
+        <!-- phase 4 -->
+        <rect x="16" y="232" width="250" height="44" rx="3" fill="none" stroke="currentColor" stroke-opacity="0.35"/>
+        <text x="34" y="260" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="15" font-weight="700" fill="currentColor" fill-opacity="0.5">4</text>
+        <text x="56" y="259" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="12.5" fill="currentColor">One store layer</text>
+
+        <!-- phase 5 -->
+        <rect x="16" y="304" width="250" height="44" rx="3" fill="none" stroke="currentColor" stroke-opacity="0.35"/>
+        <text x="34" y="332" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="15" font-weight="700" fill="currentColor" fill-opacity="0.5">5</text>
+        <text x="56" y="331" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="12.5" fill="currentColor">Compile once</text>
+
+        <!-- phase 6 -->
+        <rect x="16" y="376" width="250" height="44" rx="3" fill="none" stroke="currentColor" stroke-opacity="0.35"/>
+        <text x="34" y="404" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="15" font-weight="700" fill="currentColor" fill-opacity="0.5">6</text>
+        <text x="56" y="403" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="12.5" fill="currentColor">state.rs split in four</text>
+
+        <!-- phase 7 -->
+        <rect x="16" y="448" width="250" height="44" rx="3" fill="none" stroke="currentColor" stroke-opacity="0.35"/>
+        <text x="34" y="476" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="15" font-weight="700" fill="currentColor" fill-opacity="0.5">7</text>
+        <text x="56" y="475" font-family="Familjen Grotesk, Helvetica Neue, Arial, sans-serif" font-size="12.5" fill="currentColor">One rule, one place</text>
+
+        <!-- spine arrows -->
+        <line x1="141" y1="60" x2="141" y2="82" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <line x1="141" y1="132" x2="141" y2="154" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <line x1="141" y1="204" x2="141" y2="226" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <line x1="141" y1="276" x2="141" y2="298" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <line x1="141" y1="348" x2="141" y2="370" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <line x1="141" y1="420" x2="141" y2="442" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+
+        <!-- edge labels -->
+        <text x="284" y="78" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--ok)">done — panics are loud now</text>
+        <text x="284" y="150" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--ok)">done — id-based, actor-named</text>
+        <text x="284" y="222" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.72">the policy exists before it is encoded</text>
+        <text x="284" y="294" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.72">correctness landed — safe to move code</text>
+        <text x="284" y="366" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.72">build time halves; refactor is iterable</text>
+        <text x="284" y="438" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" fill-opacity="0.72">types have a home; helpers move into it</text>
+
+        <!-- phase 2 hands update_task to phase 6 -->
+        <path d="M 266 110 H 566 Q 580 110 580 124 V 384 Q 580 398 566 398 H 278"
+              fill="none" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#ar-a)"/>
+        <text x="596" y="246" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--accent)">hands over</text>
+        <text x="596" y="262" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--accent)">update_task</text>
+      </svg>
+      <figcaption>Phases 1 and 2 are landed (green); Phase 3 is next. Each arrow names what the earlier phase hands the later one. The dashed line is the one cross-phase dependency: the <code>update_task</code> method introduced in Phase 2 is what Phase 6 splits <code>state.rs</code> around.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>The seven phases</h2>
+    <p class="section-note">Every phase ends in a mechanical gate — a test or a <code>repo-health.sh</code> breach — landed in the same commit as the fix it guards. A gate added later never runs against the code that needed it.</p>
+
+    <article class="phase">
+      <div class="phase-num">1<span class="phase-start">landed</span></div>
+      <div>
+        <h3>The process cannot silently stop</h3>
+        <p class="theme">Two ways the gateway stops doing work while still reporting healthy.</p>
+
+        <div class="block">
+          <p class="label">What is broken</p>
+          <ul>
+            <li><b>No loop supervision.</b> <code>main.rs:1393-1538</code> spawns nine loops and discards every handle. Tokio catches the panic, the task ends, nothing logs at loop level, the operator feed stays quiet. A panicking orchestrator means unattended execution silently ceases — the exact failure the product exists to prevent.</li>
+            <li><b>An ABBA deadlock between the two hottest paths.</b> <code>state.rs:1838 snapshot()</code> takes 28 read guards as temporaries in a tail-position struct literal, so temporary lifetime extension keeps all of them alive to the end of the function — <code>entities</code> second, <code>operator_feed</code> sixteenth. <code>state.rs:1937</code> takes <code>operator_feed.write()</code> into a named binding, holds it across two awaits, and takes <code>entities.read()</code> in the middle — the reverse order. Tokio's <code>RwLock</code> is write-preferring, so a pending writer blocks new readers and the cycle closes. Both paths run constantly.</li>
+          </ul>
+        </div>
+
+        <div class="block">
+          <p class="label">The change</p>
+          <ul>
+            <li>New <code>supervisor.rs</code>: <code>spawn_supervised(name, policy, factory)</code> distinguishes clean exit from <code>JoinError::is_panic()</code>, restarts with capped backoff, and pushes an operator-feed row per restart so a crash-looping subsystem is visible rather than inferred from silence. Convert all nine spawns.</li>
+            <li>Rewrite <code>snapshot()</code> to clone field by field, each guard dropped before the next is taken. This also dissolves the 28-guard convoy that serialises the snapshot against every writer.</li>
+            <li>Scope the feed write guard to the push-and-trim and drop it before the Surreal await; read <code>entities</code> afterwards.</li>
+            <li>Add a <code>//! Lock order</code> block to <code>state.rs</code>: never hold a guard across an await, never hold two.</li>
+          </ul>
+        </div>
+
+        <div class="block gate">
+          <p class="label">Exit gate — all met</p>
+          <ul>
+            <li><code>tests/loop_supervision_test.rs</code> (3) — a loop that panics twice restarts twice and runs; <code>/health</code> reports <code>degraded</code> plus per-loop counts; a registry-less state omits the field rather than faking it.</li>
+            <li><code>supervisor.rs</code> unit tests (6) — restart-and-record, clean return is not a restart, aborting supervision stops the loop, payload extraction, capped backoff, and that public counts carry no panic text.</li>
+            <li>The deadlock guard was <b>verified to fail against the original code</b> — it hangs the full 20s — and to pass against the fix.</li>
+            <li><code>repo-health.sh</code> §7 now reports <code>11 background loops supervised, 0 with a discarded handle</code>.</li>
+            <li>Workspace gates clean: <code>check</code>, <code>clippy -D warnings</code>, 1,607 tests passing.</li>
+          </ul>
+        </div>
+
+        <div class="block">
+          <p class="label">What changed from this plan, and why</p>
+          <ul>
+            <li><b>The first version of the deadlock test was worthless</b> — written as planned, it passed against the broken code. Both paths take <code>entities</code> for <em>read</em>, and read guards are shared, so two paths in opposite orders cannot block each other. The cycle needs a third task queuing <code>entities.write()</code>, which is what makes a write-preferring <code>RwLock</code> block the reader in the middle. Adding that third actor reproduced the hang. Same severity — all three run constantly — but the review's mechanism was wrong.</li>
+            <li><b>Eleven loops, not nine.</b> The two the review missed are the worst: the 60s control-state persist loop (nothing reaches disk or Surreal again, no symptom until a restart reads a stale snapshot) and the credential-vault sweeper (vaults stay unlocked in memory for the life of the process — a security regression, not a missed convenience).</li>
+            <li><b>No new feed kind.</b> A crashed subsystem is system health, not work on a timeline, and a new kind would fire a phone push for an infrastructure event. Restart counts go on <code>/health</code> instead; panic text stays off that public endpoint and waits for Phase 4's authenticated store report.</li>
+            <li><b>Restarts are unlimited, alerts are throttled</b> to one per five minutes per loop. Giving up after N failures would restore exactly the silence this phase removes.</li>
+          </ul>
+        </div>
+
+        <p class="effort">≈1 session <span>· main.rs, state.rs, server.rs, new supervisor.rs, new test, repo-health</span></p>
+      </div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-num">2<span class="phase-start">landed</span></div>
+      <div>
+        <h3>One way to move a task</h3>
+        <p class="theme">62 <code>tasks.write()</code> sites. Six are in <code>state.rs</code>; the other 56, across 25 files, each re-implement the same three steps and disagree about the rules.</p>
+
+        <div class="block">
+          <p class="label">What is broken</p>
+          <ul>
+            <li><b>Write-by-stale-index.</b> <code>orchestrator.rs:340</code> collects <code>(index, …)</code> under a read guard and drops it. <code>:395</code> awaits one Surreal recall per candidate entity holding no lock. <code>:449</code> takes the write guard and mutates <code>tasks[i]</code> by that index with no re-check of identity or status. In between, any of 56 writers can push or <code>retain</code> — <code>entity_import_api.rs:1136</code> deletes an entity's tasks and shifts every later index. Two outcomes: the wrong task is hijacked into an unattended agent run, including one the human just cancelled, or the index is out of bounds and the loop panics. <code>:457</code> also reads the id <em>after</em> mutating, so the log names the wrong task.</li>
+            <li><b>The cancel guard is bypassed on the failure path.</b> <code>orchestrator.rs:674-681</code> re-finds by id correctly, then assigns <code>t.status = Failed</code> raw, ignoring <code>set_task_status_guarded</code>. A run that fails after the human cancelled overwrites <code>Cancelled</code>.</li>
+            <li><b>Chat reverts concurrent loop writes.</b> <code>chat_tools.rs:1417-1424</code> does <code>*slot = task.clone()</code> — a whole-row overwrite of a snapshot taken before an LLM round-trip.</li>
+            <li><b>21 raw <code>.status = TaskStatus::</code> assignments</b> outside <code>state.rs</code> across 8 files, against 11 sites that use the guard.</li>
+          </ul>
+        </div>
+
+        <div class="block">
+          <p class="label">The change</p>
+          <ul>
+            <li><code>ControlState::update_task(id, f)</code> — takes the write guard, re-finds by id, applies the closure, returns the updated clone for persistence. Position-based mutation stops being expressible.</li>
+            <li>Orchestrator pickup selects a candidate <em>id</em>, not an index, and re-asserts the status is still <code>Backlog | Queued</code> inside <code>update_task</code>. This single change closes the stale index, the panic, and the cancel hijack together.</li>
+            <li>Split the setter by <em>actor</em> instead of picking a default. The doc comment at <code>state.rs:141-153</code> is right that one default cannot serve both — human reopen and requeue legitimately un-cancel. So: <code>set_task_status_by_loop</code> (guarded, <code>#[must_use]</code>) and <code>set_task_status_by_human</code> (unguarded). Renaming both forces all 56 sites to declare which actor they are.</li>
+          </ul>
+        </div>
+
+        <div class="block gate">
+          <p class="label">Exit gate — all met</p>
+          <ul>
+            <li><code>repo-health.sh</code> §8 — three checks, <b>each verified to fire against a deliberate violation before being kept</b>: a task written by saved index, a direct <code>task.status =</code> assignment, and a ratchet on the remaining <code>tasks.write()</code> sites. Test fixtures and comments are skipped.</li>
+            <li><code>tests/orchestrator_failure_tests.rs</code> — a runner crash after a human cancel leaves the task cancelled. <b>Verified to fail against the old code</b> with <code>left: Failed, right: Cancelled</code>.</li>
+            <li>Five new <code>state.rs</code> tests, including one that shows the indexed write landing on the wrong task after a <code>retain</code>, beside the <code>update_task</code> call that cannot.</li>
+            <li>Workspace gates clean: 1,618 tests passing.</li>
+          </ul>
+        </div>
+
+        <div class="block">
+          <p class="label">What changed from this plan, and why</p>
+          <ul>
+            <li><b>The <code>tasks.write()</code> breach became a ratchet</b>, because a blanket ban was the wrong gate. 38 production sites remain and nearly all are already correct — they take the guard, then re-find by id, which is what <code>update_task</code> does internally. Banning them would have meant 36 cosmetic conversions riding along with three real fixes. The two patterns that actually caused defects are hard breaches instead, and neither has a production instance left.</li>
+            <li><b>The setters split by actor, not by strictness.</b> The plan said make the guarded one the only setter; the existing doc comment was right that this cannot work, because reopen and requeue legitimately un-cancel. Naming the actor forces the choice at every call site instead.</li>
+            <li><b>A second bug fell out of the conversion:</b> assigning <code>task.status</code> skips <code>status_changed_at</code> and <code>completed_at</code> — and the consistency streak and per-day counts are computed from exactly those fields.</li>
+            <li><b><code>claim_task</code> joined <code>update_task</code>.</b> Select, do I/O, then claim is the shape every loop needs and none had; leaving the status re-check to each caller would have rebuilt the original problem one loop at a time.</li>
+          </ul>
+        </div>
+
+        <p class="effort">≈2 sessions <span>· 16 files, 794 insertions</span></p>
+      </div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-num">3</div>
+      <div>
+        <h3>Nothing deletes what it has not read</h3>
+        <p class="theme">Three persistence mechanisms, three boot reconciliation policies — and the destructive one is the default for entities.</p>
+
+        <div class="block">
+          <p class="label">What is broken</p>
+          <ul>
+            <li><code>entity_store.rs:317-355 sync_all()</code> upserts every in-memory entity, then selects the table and <b>deletes every row whose id is absent from memory</b>.</li>
+            <li><code>main.rs:1020</code> treats hydration failure as <code>warn!</code>-and-continue. So a transient Surreal read error at boot leaves memory empty, and the next periodic sync deletes the rows that failed to load. A read failure is laundered into permanent data loss.</li>
+            <li><code>task_store.rs:1-19</code> already documents the correct policy for the identical problem — "upsert-only periodic sync, so an instance that doesn't know a task yet can't delete it" — and entities never got it.</li>
+          </ul>
+        </div>
+
+        <div class="block">
+          <p class="label">The change</p>
+          <ul>
+            <li><code>sync_all</code> becomes upsert-only. Pruning moves to an explicit <code>prune_absent(keep)</code>, callable only from a path that can prove its read succeeded.</li>
+            <li>Hydration failure stops being advisory: a store that fails to hydrate is marked degraded and its periodic sync is disabled for the process lifetime. A gateway running on data it could not read must not write back.</li>
+            <li>Write the single reconciliation policy into <code>ARCHITECTURE.md</code>, including the honest split between row-backed collections and snapshot-only ones, so the next store author inherits a rule rather than a coin flip.</li>
+          </ul>
+        </div>
+
+        <div class="block gate">
+          <p class="label">Exit gate</p>
+          <ul>
+            <li>Test: a store whose <code>list_all</code> returns <code>Err</code> at boot performs zero deletes afterwards.</li>
+            <li><code>repo-health.sh</code> breach on <code>.delete(</code> inside any <code>fn sync_</code>.</li>
+          </ul>
+        </div>
+
+        <p class="effort">≈1 session <span>· entity_store.rs, main.rs, docs</span></p>
+      </div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-num">4</div>
+      <div>
+        <h3>One store layer</h3>
+        <p class="theme">Nineteen stores, no shared base — so the same three problems appear thirteen to fifteen times.</p>
+
+        <div class="block">
+          <p class="label">What is broken</p>
+          <ul>
+            <li><code>record_id_key</code> is pasted into <b>13</b> store modules.</li>
+            <li><b>15</b> <code>init_schema()</code> methods, each called best-effort at boot: a failure logs and silently disables that store. Nothing reports "auth_store did not initialise", so a half-booted gateway looks healthy.</li>
+            <li>No schema version row and no migration mechanism. Opaque-JSON row bodies have absorbed every field addition so far, which works right up until a shape has to change.</li>
+          </ul>
+        </div>
+
+        <div class="block">
+          <p class="label">The change</p>
+          <ul>
+            <li><code>store_common.rs</code>: <code>record_id_key</code> once, a <code>StoreInit</code> result type, and a <code>schema_version</code> row with a <code>migrate(from, to)</code> hook that is a no-op today — so the first real migration is not also the invention of the mechanism.</li>
+            <li>One startup store report: a single log summary plus a <code>/api/health/stores</code> entry listing each store as <code>ready</code> or <code>degraded(reason)</code>.</li>
+          </ul>
+        </div>
+
+        <div class="block gate">
+          <p class="label">Exit gate</p>
+          <ul>
+            <li><code>record_id_key</code> defined exactly once — grep count of 1.</li>
+            <li>Test: a forced <code>init_schema</code> failure appears in the startup report as <code>degraded</code>.</li>
+          </ul>
+        </div>
+
+        <p class="effort">≈1–2 sessions <span>· 13 store modules, mechanical</span></p>
+      </div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-num">5</div>
+      <div>
+        <h3>Compile once</h3>
+        <p class="theme">The whole crate is compiled twice, on every check, by everyone.</p>
+
+        <div class="block">
+          <p class="label">What is broken</p>
+          <p><code>lib.rs</code> declares 95 modules. <code>main.rs</code> declares 96 and references the library crate <b>zero</b> times. The bin target recompiles all 95 modules from scratch instead of linking the lib, and the CI check that keeps both mod lists in sync exists only to protect that duplication.</p>
+        </div>
+
+        <div class="block">
+          <p class="label">The change</p>
+          <ul>
+            <li>The ~1,530 non-<code>mod</code> lines of boot logic move into the library as <code>pub async fn run(args) -&gt; Result&lt;()&gt;</code>; <code>main.rs</code> becomes a shim that parses args and calls it. Visibility gets easier, not harder — the boot code ends up inside the crate it wires.</li>
+            <li>Delete the duplicate mod list and the CI check guarding it. Deleted, not skipped.</li>
+          </ul>
+        </div>
+
+        <div class="block gate">
+          <p class="label">Exit gate</p>
+          <ul>
+            <li><code>cargo check --workspace --all-targets</code> wall-clock measured before and after and recorded in the commit body. Expect roughly half.</li>
+            <li><code>main.rs</code> under 40 lines, with zero <code>mod</code> declarations.</li>
+          </ul>
+        </div>
+
+        <p class="effort">≈1 session <span class="caution">· schedule when no other session has main.rs open</span></p>
+      </div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-num">6</div>
+      <div>
+        <h3><code>state.rs</code> stops being four files in one</h3>
+        <p class="theme">3,253 lines doing four jobs — and the root cause of 20 of the 42 circular module pairs.</p>
+
+        <div class="block">
+          <p class="label">What is broken</p>
+          <p><code>state.rs</code> holds <b>63</b> public type declarations (≈1,484 lines of definitions), <b>28</b> <code>RwLock</code> collection fields, and <b>40</b> <code>ControlState</code> methods, plus free helpers. The cycles are structural rather than accidental: every subsystem imports its <em>types</em> from <code>state.rs</code>, and <code>state.rs</code> imports their <em>behaviour</em> back.</p>
+        </div>
+
+        <div class="block">
+          <p class="label">The change</p>
+          <ul>
+            <li><b>Step 1, types only.</b> Move the 63 declarations into a <code>domain/</code> tree, or <code>crates/common</code> where a type is genuinely shared. Purely mechanical, and it breaks most of the 20 cycles by itself because the dependency becomes one-way. One commit, reviewed for "only moves, no edits".</li>
+            <li><b>Step 2.</b> Split the 40 methods by aggregate — tasks, entities, missions, feed — each in its own file. <code>update_task</code> from Phase 2 lands here naturally, and the 17 push-only sites finally get a creation method, which retires the Phase 2 allowlist.</li>
+          </ul>
+        </div>
+
+        <div class="block gate">
+          <p class="label">Exit gate</p>
+          <ul>
+            <li><code>state.rs</code> under ~800 lines.</li>
+            <li>A script counting circular module pairs, run before and after, recorded in the commit body — target is those 20 pairs gone.</li>
+            <li>No module imports both a type and a function from <code>state.rs</code>.</li>
+          </ul>
+        </div>
+
+        <p class="effort">≈2–3 sessions <span>· wide diff, no behaviour change</span></p>
+      </div>
+    </article>
+
+    <article class="phase">
+      <div class="phase-num">7</div>
+      <div>
+        <h3>One rule, one place</h3>
+        <p class="theme">The residue, including the three corrected claims from the top of this page.</p>
+
+        <div class="block">
+          <p class="label">The change</p>
+          <ul>
+            <li><code>derive_mission_task_counts</code> becomes the only mission tally; the 18 inline <code>mission_id</code> filters call it. Move it out of <code>orchestrator</code> into the mission module it belongs to.</li>
+            <li>Renew the heartbeat lease while a dispatch is in flight, instead of betting the dispatch finishes inside ten minutes.</li>
+            <li><code>reminder_fired</code> becomes a bool on every path; <code>chat_tools.rs:1404</code> stops writing it as a string.</li>
+            <li>Decide explicitly whether two gateway instances against one SurrealDB is a supported topology. If yes, reminders need the lease treatment heartbeats already have. If no, say so in <code>ARCHITECTURE.md</code> and stop paying for half-measures.</li>
+          </ul>
+        </div>
+
+        <div class="block gate">
+          <p class="label">Exit gate</p>
+          <ul>
+            <li>One tally function; grep proves no inline mission-task filtering remains.</li>
+            <li>Test: a dispatch longer than the lease window cannot be re-fired.</li>
+          </ul>
+        </div>
+
+        <p class="effort">≈1 session <span>· cleanup and one product decision</span></p>
+      </div>
+    </article>
+  </section>
+
+  <section>
+    <h2>How to run a phase</h2>
+    <pre>git switch main &amp;&amp; git pull &amp;&amp; git switch -c fix/phase-N-&lt;slug&gt;
+<span class="c"># ... change ...</span>
+rustfmt --edition 2024 &lt;only the files you touched&gt;   <span class="c"># never `cargo fmt --all`</span>
+cargo check  --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test   --workspace
+scripts/repo-health.sh --full</pre>
+    <p>Then update <code>STATUS.md</code> with what became real, commit as <code>fix(&lt;scope&gt;): &lt;lowercase imperative&gt;</code> with a body explaining <em>why</em>, and merge before starting the next phase.</p>
+
+    <p class="outscope"><b>Out of scope for all seven phases:</b> the Architect crate stays in shadow mode; no new features; no LLM behaviour changes; no renaming of <code>consistent-world</code> identifiers. The full checklist version of this plan lives in the repo at <code>docs/plans/2026-09-13-hardening-plan.md</code>.</p>
+  </section>
+
+</div>

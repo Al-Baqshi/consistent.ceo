@@ -1,0 +1,14 @@
+[package]
+name = "consistent-world-screen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+xcap = "0.9"
+thiserror.workspace = true
+tracing.workspace = true
+
+[[bin]]
+name = "screen-probe"
+path = "src/bin/probe.rs"

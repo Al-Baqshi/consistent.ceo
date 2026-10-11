@@ -1,0 +1,233 @@
+name: Release Desktop
+
+on:
+  push:
+    tags: ["v*"]
+  # A build that releases nothing: choose the platforms, get the installers as
+  # workflow artifacts. This is how a Windows build is tried without cutting a
+  # version tag — Actions → Release Desktop → Run workflow, or
+  #   gh workflow run release-desktop.yml --ref <branch> -f platforms=windows
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which installers to build
+        type: choice
+        options: [windows, macos, all]
+        default: windows
+
+permissions:
+  contents: write
+
+jobs:
+  # A job-level `if` cannot see `matrix`, so the platform choice becomes the
+  # matrix itself. A tag push always builds everything.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: bash
+        env:
+          PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'all' }}
+        run: |
+          set -euo pipefail
+          mac_arm='{"os":"macos-latest","args":"--bundles dmg","name":"macos-arm64","target":"aarch64-apple-darwin"}'
+          # Intel builds on `macos-15-intel`. The previous `macos-13` label was
+          # retired by GitHub, so the job never got a runner: it sat queued for
+          # 24h and was auto-cancelled, which is why v0.1.0 shipped without an
+          # Intel DMG. `macos-15-intel` is x86_64, so this stays a *native*
+          # build — no cross-compiling whisper.cpp or SwiftPM.
+          mac_x64='{"os":"macos-15-intel","args":"--bundles dmg","name":"macos-x64","target":"x86_64-apple-darwin"}'
+          # Windows: the transitive `openssl-sys` (via webauthn-rs) is vendored
+          # on windows-msvc (see crates/gateway/Cargo.toml), so the sidecar
+          # builds from source. Vendored OpenSSL needs perl + nasm; the runner
+          # image ships Strawberry Perl, and nasm is installed below.
+          win='{"os":"windows-latest","args":"--bundles nsis","name":"windows-x64","target":"x86_64-pc-windows-msvc"}'
+          case "$PLATFORMS" in
+            windows) matrix="[$win]" ;;
+            macos)   matrix="[$mac_arm,$mac_x64]" ;;
+            *)       matrix="[$mac_arm,$mac_x64,$win]" ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    # A missing/busy runner image should fail this job, not burn a day before
+    # auto-cancelling the whole run the way the macos-13 job did. Windows gets
+    # longer: it compiles OpenSSL and whisper.cpp from source on a slower runner.
+    timeout-minutes: ${{ matrix.name == 'windows-x64' && 150 || 90 }}
+    env:
+      # Pin the sidecar target explicitly instead of letting the scripts infer it
+      # from the host, so a runner-image arch change surfaces as a build failure
+      # rather than a bundle full of wrong-architecture sidecars.
+      CONSISTENT_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # whisper.cpp (compiled from source by the consistent-whisper sidecar via
+      # whisper-rs) needs cmake at build time. GitHub runners ship it, but verify
+      # explicitly so an image change fails here with a clear message instead of
+      # deep in the C++ build — and self-heal on macOS where brew is available.
+      - name: Ensure cmake (whisper.cpp build dependency)
+        shell: bash
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              brew install cmake
+            else
+              echo "::error::cmake not found on $RUNNER_OS runner; the whisper sidecar cannot build" >&2
+              exit 1
+            fi
+          fi
+          cmake --version
+
+      # Vendored OpenSSL (Windows only, see crates/gateway/Cargo.toml) compiles
+      # from source and its build scripts assemble with nasm. Chocolatey does
+      # not put it on PATH for later steps, so do that too.
+      - name: Install nasm (vendored OpenSSL build dependency)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci
+
+      # Windows signing, through Azure Trusted Signing (see docs/windows-desktop.md).
+      # Configured → Tauri signs the app, its sidecars and the installer via
+      # `signCommand`, which it reads from a platform config file merged over
+      # tauri.conf.json. Not configured → an unsigned build, as before, and
+      # SmartScreen warns on first launch.
+      - name: Windows code signing (when configured)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          SIGNING_ENDPOINT: ${{ vars.WINDOWS_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.WINDOWS_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.WINDOWS_SIGNING_PROFILE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AZURE_CLIENT_ID:-}" ] || [ -z "${SIGNING_ENDPOINT:-}" ] ||
+             [ -z "${SIGNING_ACCOUNT:-}" ] || [ -z "${SIGNING_PROFILE:-}" ]; then
+            echo "::notice::Windows signing not configured; building an unsigned installer."
+            exit 0
+          fi
+          cargo install trusted-signing-cli --locked
+          # Tauri splits signCommand on spaces, so no argument may contain one.
+          cat > desktop/src-tauri/tauri.windows.conf.json <<EOF
+          {
+            "bundle": {
+              "windows": {
+                "signCommand": "trusted-signing-cli -e ${SIGNING_ENDPOINT} -a ${SIGNING_ACCOUNT} -c ${SIGNING_PROFILE} -d Consistent-CEO %1"
+              }
+            }
+          }
+          EOF
+          echo "Signing with profile ${SIGNING_PROFILE}"
+
+      # Unsigned macOS builds for now. The macOS jobs previously failed here with
+      # "failed to import keychain certificate" because APPLE_CERTIFICATE is not
+      # a valid signing cert. Shipping unsigned works (the /download page tells
+      # users to right-click → Open); to sign later, set valid APPLE_* secrets
+      # and restore the env block below.
+      #
+      # Only a tag push creates a (draft) release; a manual run just builds.
+      - id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read by trusted-signing-cli when the signing step above configured it.
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          releaseName: ${{ github.event_name == 'push' && format('Consistent CEO {0}', github.ref_name) || '' }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # tauri names its bundles with the version and architecture, which changes
+      # every release. The landing page's download buttons need *stable* URLs, so
+      # copy each installer to a fixed name — that is what makes
+      # `releases/latest/download/<name>` resolve forever.
+      - name: Stable-named installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="desktop/src-tauri/target/release/bundle"
+          case "${{ matrix.name }}" in
+            macos-arm64) src=$(ls "$bundle"/dmg/*.dmg | head -1); dest="Consistent-CEO-macOS-AppleSilicon.dmg";;
+            macos-x64)   src=$(ls "$bundle"/dmg/*.dmg | head -1); dest="Consistent-CEO-macOS-Intel.dmg";;
+            windows-x64) src=$(ls "$bundle"/nsis/*-setup.exe | head -1); dest="Consistent-CEO-Windows-Setup.exe";;
+            *) echo "unknown matrix name ${{ matrix.name }}"; exit 1;;
+          esac
+          cp "$src" "$dest"
+          echo "INSTALLER=$dest" >> "$GITHUB_ENV"
+
+      # Informational: says in the log whether the installer that was built is
+      # signed, without failing an intentionally unsigned build.
+      - name: Report the installer's signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature $env:INSTALLER
+          "Signature: $($sig.Status) $($sig.SignerCertificate.Subject)"
+
+      - name: Attach it to the release
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "$INSTALLER" --clobber --repo "${{ github.repository }}"
+
+      # Keep the installer: the publish job mirrors it, and a manual run's
+      # installer is downloaded from here to test on a real machine.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.name }}
+          path: Consistent-CEO-*
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'push' && 7 || 14 }}
+
+  # Everything above uploads into a *draft* release so a half-finished build is
+  # never publicly downloadable. This job runs once, after every platform has
+  # succeeded, and publishes it: the landing page and `install.sh` link to
+  # `releases/latest/download/<stable name>`, which resolves only to a
+  # published release. A manual run never publishes.
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Flip the draft to a real release. Until this happens,
+      # `releases/latest/download/<asset>` resolves to nothing at all — which is
+      # the other reason v0.1.0's download links were dead.
+      - name: Publish the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "${{ github.ref_name }}" --draft=false \
+            --repo "${{ github.repository }}"
+          echo "Published ${{ github.ref_name }}"

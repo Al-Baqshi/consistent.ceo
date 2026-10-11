@@ -1,0 +1,284 @@
+# SAMPLE CONFIG — not loaded by anything.
+#
+# The gateway reads `~/.consistent-world/consistent_world.toml` (note the
+# underscore), or whatever `CONSISTENT_WORLD_CONFIG` names; Docker uses
+# `docker/consistent-world.toml`. This file at the repo root is a reference
+# for what the keys look like, so treat a key here as documentation rather
+# than as configuration — several are already absent from the structs in
+# `crates/gateway/src/config.rs` and are silently dropped when parsed.
+#
+# Consistent CEO default configuration
+
+[gateway]
+port = 18800
+bind = "127.0.0.1"
+mode = "local"
+
+[gateway.auth]
+mode = "token"
+# token is auto-generated on first run
+
+[agents.defaults]
+max_concurrent = 4
+preferred_provider = "openai"
+preferred_model = "brain-default"
+
+[agents.defaults.subagents]
+max_concurrent = 8
+
+[llm]
+provider = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[llm.providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[llm.providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[llm.providers.google]
+base_url = "https://generativelanguage.googleapis.com/v1"
+api_key_env = "GOOGLE_API_KEY"
+
+# Your Claude subscription, via the locally-installed `claude` CLI. No API key:
+# the CLI is already signed in, so any director assigned this muscle thinks on
+# the subscription at no marginal cost. Slower than an API call (~7s, process
+# spawn) — right for directors that reason, wrong for every chat keystroke.
+[llm.providers.claude-code]
+base_url = "claude-code://local"
+api_key_env = "CLAUDE_CODE_CLI"
+
+# ChatGPT subscription via the locally-installed `codex` CLI — keyless, same
+# shape as claude-code above.
+[llm.providers.codex]
+base_url = "codex://"
+api_key_env = "CODEX_CLI"
+
+# Local muscle. Registering ollama explicitly is what stops the resolver
+# treating it as a dormant local id and silently falling back to the cloud
+# default (see `is_dormant_local_provider_name` in config.rs). Keyless by
+# design — `credentials_resolver` special-cases OLLAMA_API_KEY.
+[llm.providers.ollama]
+base_url = "http://127.0.0.1:11434"
+api_key_env = "OLLAMA_API_KEY"
+
+[llm.models.brain-default]
+provider = "openai"
+model = "gpt-4o"
+
+[llm.models.operating-muscle]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[llm.models.local-fast]
+provider = "ollama"
+model = "gemma4:latest"
+
+[llm.models.local-code]
+provider = "ollama"
+model = "gemma4:latest"
+
+[llm.models.local-extract]
+provider = "ollama"
+model = "gemma4:latest"
+
+[llm.models.operating-fallback]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[llm.models.fullstack-muscle]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[llm.models.fullstack-fallback]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[llm.models.strategy-muscle]
+provider = "openai"
+model = "gpt-4o"
+
+[llm.models.strategy-fallback]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[routing.modes.brain]
+temperature = 0.2
+max_tokens = 8192
+
+[routing.modes.muscle]
+temperature = 0.2
+max_tokens = 6144
+
+[routing.modes.fast-fallback]
+temperature = 0.1
+max_tokens = 4096
+
+[routing.model_tiers.hosted_brain]
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+
+[routing.model_tiers.hosted_smart]
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+
+[routing.model_tiers.hosted_flash]
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+
+[routing.model_tiers.local_fast]
+provider = "ollama"
+model = "local-fast"
+mode = "muscle"
+
+[routing.model_tiers.local_code]
+provider = "ollama"
+model = "local-code"
+mode = "muscle"
+
+[routing.model_tiers.local_extract]
+provider = "ollama"
+model = "local-extract"
+mode = "fast-fallback"
+
+[routing.task_kinds.prompt-interpretation]
+director_id = "operations"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_fast", "local_extract"]
+
+[routing.task_kinds.planning]
+director_id = "strategy-partner"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_fast", "local_extract"]
+
+[routing.task_kinds.operations]
+director_id = "operations"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_fast", "local_extract"]
+
+[routing.task_kinds.coding]
+director_id = "full-stack-development"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_code", "local_fast"]
+
+[routing.task_kinds.debugging]
+director_id = "full-stack-development"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_code", "local_fast"]
+
+# A heartbeat is one small non-streaming completion per firing — ideal for the
+# local model. Uncomment to keep every director beat on-device while chat stays
+# on the brain. A director whose row pins its own provider+model is unaffected
+# (most specific wins).
+# [routing.task_kinds.heartbeat]
+# provider = "ollama"
+# model = "local-fast"
+
+[routing.task_kinds.review]
+director_id = "full-stack-development"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_code", "local_fast"]
+
+[routing.task_kinds.growth]
+director_id = "strategy-partner"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_fast", "local_extract"]
+
+[routing.task_kinds.creative]
+director_id = "operations"
+provider = "openai"
+model = "brain-default"
+mode = "brain"
+generation_tier = "hosted_brain"
+review_tier = "hosted_brain"
+fallback_tiers = ["local_fast", "local_extract"]
+
+[agents.defaults.compaction]
+mode = "safeguard"
+
+[memory]
+# SurrealDB is the sole memory backend. Configure the connection via SURREAL_URL (env)
+# or explicit surreal_url / surreal_ns / surreal_db keys here. Dev default:
+# `surreal start memory --user root --pass root` on localhost.
+vector_search = true
+# Local Ollama model for semantic recall, pulled on first start.
+embedding_model = "nomic-embed-text"
+
+[plugins]
+wasm_sandbox = true
+registry_url = "https://hub.consistent_world.dev"
+
+[credentials]
+backend = "keyring"  # "keyring" | "vault"
+
+[telemetry]
+enabled = true
+cost_tracking = true
+log_level = "info"
+
+# How the companion reaches you. Reminders, approvals, heartbeat summaries and
+# finished agent runs always land on the operator feed; this controls whether
+# they also chase you when nothing is open.
+#
+# false (default): everything stays on your own machines — the mobile app polls
+# the feed while it is open, the desktop shell raises native notifications while
+# it is running. true: the gateway pushes to registered phones with the app
+# closed, which routes notification titles/bodies through Expo's push service.
+#
+# Leaving this false costs you nothing while you are looking at a screen:
+#   - the phone polls the operator feed and raises local notifications whenever
+#     the app is foregrounded (`mobile/src/lib/companion.ts`),
+#   - the desktop shell raises native notifications while it is running,
+#   - the web dashboard and every `/api/*` client still see the full feed.
+# What you lose is only the closed-app case: nothing reaches the phone while it
+# is in your pocket.
+#
+# To enable Expo push:
+#   1. mobile_push = true, then restart the gateway.
+#   2. On the phone: Settings → "Push notifications" on. That grants the iOS /
+#      Android permission, fetches an Expo push token, and re-registers this
+#      device with it (POST /api/devices). Without step 2 the device row stays
+#      poll-only and the gateway has nothing to push to.
+#   3. Notification titles and bodies then transit Expo's push service
+#      (exp.host) — the one point where feed content leaves your machines.
+#      Only the allowlisted kinds go out (see `is_notifiable` in
+#      `crates/gateway/src/notify.rs`), each trimmed to a single glance, and
+#      quiet hours suppress the push while still recording the feed row.
+# Turning the phone toggle back off clears the stored token server-side, so
+# reverting is complete rather than just local.
+[notifications]
+mobile_push = false

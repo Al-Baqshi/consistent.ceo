@@ -1,0 +1,201 @@
+%% Mirimai ID: consistent-world-future-v2
+%% Slot: entity.flowDiagrams.future.v2
+%% Updated: 2026-05-25
+%% Concept: Hardened future spec — Architect for both sync (user) and async (scheduler/heartbeat),
+%%          multi-entity, tool-aware, verify-with-mechanism, explicit failure paths,
+%%          split write-back, session-as-data, proactive task pipeline with validation gate,
+%%          and optional coding-agent delegation.
+%%
+%% Read this with consistent-world-current-state.mmd open — every node here maps to either
+%% existing code (kept), code to be collapsed (rebuilt to match), or new code (added).
+
+flowchart TB
+  %% ── People ──────────────────────────────────────────────
+  USER([Human operator])
+  NEW([New user · no entity yet])
+
+  %% ── Async triggers (parity with sync entry) ─────────────
+  subgraph TRIG[Async triggers]
+    direction TB
+    SCHED[Scheduler · cron 60s<br/>scheduled_tasks]
+    HB[Heartbeat · 15s tick<br/>directors with heartbeat_enabled]
+    PROACTIVE[Proactive engine<br/>AI-initiated work from prior turns]
+  end
+
+  %% ── One surface ─────────────────────────────────────────
+  CHAT[Chat surface<br/>text ✅ · voice ✅ · face ⏸ parked vision]
+
+  %% ── Consistent World = harness, not the brain ───────────────────
+  subgraph HARNESS[Consistent World harness]
+    direction TB
+    CTX["Bind (workspace, peer) → entity<br/>resolve from ENT registry"]
+    COST[Cost / credit precheck<br/>CreditLedger · CostTracker<br/>reject turn if no credit]
+    AUD[Audit trail · every step logged<br/>append-only · observability backbone]
+    GATE["Policy gate<br/>· approvals (human-in-loop)<br/>· capabilities (entity policy)<br/>· execution limits"]
+  end
+
+  %% ── Session persistence layer ──────────────────────────
+  subgraph SESS[Session data · human-loop capture]
+    direction TB
+    SRAW[(Raw sessions<br/>full conversation history<br/>ideas · decisions · corrections)]
+    SINT[Session interpreter<br/>extract insights · lessons · decisions<br/>from raw conversation data]
+    SSUM[(Session summaries<br/>distilled per-entity context<br/>survives provider/session swap)]
+  end
+
+  %% ── The architect: inspect before it invents ────────────
+  subgraph ARCH[Bulletproof Architect]
+    direction TB
+    I["① Inspect<br/>Read entity · resources · history · lessons<br/>+ recall relevant session data"]
+    F["② Look forward<br/>Goals + gaps → next plausible states"]
+    D["③ Select director + model tier<br/>routing_engine · task_kind → tier"]
+    G["④ Generate<br/>Draft from inspected facts<br/>may request TOOLS"]
+    V["⑤ Verify<br/>claim → cite resolver<br/>every claim must resolve to ENT · MEM · SRC"]
+    I --> F --> D --> G --> V
+  end
+
+  %% ── Tools (side-effects only via GATE) ─────────────────
+  TOOLS[Tools<br/>filesystem · shell · http · browser · web_search · WASM]
+
+  %% ── Optional coding-agent delegation ───────────────────
+  CODEAGENT[Coding agents · optional<br/>Claude Code / Cursor / opencode<br/>only if user has subscription<br/>delegated muscle for heavy tasks]
+
+  %% ── Outcomes (explicit branches) ───────────────────────
+  PASS[Grounded result]
+  ASK[Ask · clarify · or refuse<br/>never guess silently]
+  FAIL[Failure<br/>LLM timeout · DB unreachable<br/>· fallback tier exhausted<br/>· policy block]
+
+  %% ── Truth (per workspace; multi-entity) ────────────────
+  subgraph WS[Workspace · tenant boundary]
+    direction TB
+    ENT[(Entity registry<br/>profile · goals · resources · policy<br/>Mirimai ID · connections<br/>e.g. Baqshi · BitRegalo · Skirting · Consistent World)]
+    MEM[(Memories<br/>HNSW vector recall)]
+    LESSONS[(Director lessons<br/>HNSW · directors teach directors)]
+    FEED[(Operator feed<br/>task / mission / approval events)]
+  end
+
+  %% ── External sources (cite targets, not truth) ─────────
+  SRC[(External sources<br/>web · files · APIs<br/>cached for citation)]
+
+  %% ── Work model with proactive pipeline ─────────────────
+  subgraph WORKM[Work model · proactive pipeline]
+    direction TB
+    MIS[Missions<br/>planned · active · blocked<br/>· needs-input · completed]
+    subgraph PIPELINE[Task pipeline · visible to user]
+      direction LR
+      T_DRAFT[Draft<br/>AI proposes tasks<br/>from conversation]
+      T_VALIDATE[Validate<br/>check against entity vision<br/>goals · narrative · policy]
+      T_QUEUED[Queued<br/>approved · waiting]
+      T_PROGRESS[In progress<br/>executing]
+      T_DONE[Done / Failed]
+      T_DRAFT --> T_VALIDATE
+      T_VALIDATE -->|aligned| T_QUEUED
+      T_VALIDATE -->|needs approval| T_HUMAN
+      T_HUMAN[Waiting for human<br/>approval required]
+      T_HUMAN -->|approved| T_QUEUED
+      T_HUMAN -->|rejected| T_DONE
+      T_QUEUED --> T_PROGRESS --> T_DONE
+    end
+  end
+
+  %% ── Natural onboarding for new users ──────────────────
+  COND[Entity Conductor<br/>natural chat → entity born<br/>exits when entity has<br/>name + kind + ≥1 resource OR profile note]
+
+  %% ── Flows: sync entry ──────────────────────────────────
+  USER --> CHAT
+  CHAT --> CTX
+  CTX --> COST
+  COST -->|ok| I
+  COST -->|no credit| FAIL
+
+  %% ── Session capture (every turn persisted) ─────────────
+  CHAT -->|every turn| SRAW
+  SINT -->|periodic| SRAW
+  SINT --> SSUM
+  SSUM -.recalled by.-> I
+  SINT -.extracts.-> LESSONS
+  SINT -.extracts.-> MEM
+
+  %% ── Flows: async entry (same Architect, different trigger) ─
+  SCHED --> T_QUEUED
+  HB --> T_QUEUED
+  PROACTIVE --> T_DRAFT
+  T_PROGRESS -->|executing| CTX
+
+  %% ── Architect reads (read-only first) ─────────────────
+  I -->|read-only first| ENT
+  I -.reads.-> MEM
+  I -.reads.-> LESSONS
+
+  %% ── Verify resolves claims against truth + sources ────
+  V -.cite resolves to.-> ENT
+  V -.cite resolves to.-> MEM
+  V -.cite resolves to.-> SRC
+
+  %% ── Generate may call tools (side-effects gated) ──────
+  G -.requests.-> TOOLS
+  TOOLS -->|side-effect request| GATE
+  GATE -->|approved| TOOLS
+  TOOLS -->|result| G
+
+  %% ── Generate may delegate to coding agents ────────────
+  G -.heavy coding task.-> CODEAGENT
+  CODEAGENT -->|result| G
+
+  %% ── Verify branches ────────────────────────────────────
+  V -->|grounded| PASS
+  V -->|ungrounded| ASK
+  V -->|error| FAIL
+
+  %% ── Outcomes back to user ─────────────────────────────
+  PASS -->|response approval| GATE
+  GATE -->|released| CHAT
+  ASK --> CHAT
+  FAIL --> CHAT
+
+  %% ── Write-back loop (split, not one arrow) ────────────
+  PASS --> MIS
+  PASS --> T_DRAFT
+  PASS --> LESSONS
+  PASS --> MEM
+  PASS --> FEED
+
+  %% ── Proactive: grounded results may spawn new tasks ───
+  PASS -.proactive.-> PROACTIVE
+
+  %% ── Onboarding flow ──────────────────────────────────
+  NEW --> CHAT
+  NEW -.first visit.-> COND
+  COND --> ENT
+  COND -->|handoff when min-viable| CHAT
+
+  %% ── Audit fans out (passive observer) ────────────────
+  AUD -.records.-> I & F & D & G & V & PASS & ASK & FAIL & TOOLS & COST & GATE & COND & T_VALIDATE & T_PROGRESS
+
+  %% ── Visual legend ───────────────────────────────────────
+  classDef human fill:#0c4a6e,stroke:#38bdf8,color:#e0f2fe
+  classDef harness fill:#1e3a5f,stroke:#64748b,color:#e2e8f0
+  classDef architect fill:#312e81,stroke:#a78bfa,color:#ede9fe
+  classDef truth fill:#14532d,stroke:#4ade80,color:#ecfccb
+  classDef safe fill:#166534,stroke:#86efac,color:#dcfce7
+  classDef stop fill:#7c2d12,stroke:#fb923c,color:#ffedd5
+  classDef fail fill:#450a0a,stroke:#f87171,color:#fee2e2
+  classDef tools fill:#3f3f46,stroke:#a1a1aa,color:#fafafa
+  classDef async fill:#365314,stroke:#a3e635,color:#ecfccb
+  classDef ext fill:#0f172a,stroke:#64748b,color:#e2e8f0
+  classDef session fill:#4a1d96,stroke:#c084fc,color:#f3e8ff
+  classDef pipeline fill:#713f12,stroke:#fbbf24,color:#fef9c3
+
+  class USER,NEW human
+  class HARNESS,CTX,AUD,GATE,COST harness
+  class ARCH,I,F,D,G,V architect
+  class WS,ENT,MEM,LESSONS,FEED truth
+  class COND truth
+  class WORKM,MIS truth
+  class PIPELINE,T_DRAFT,T_VALIDATE,T_QUEUED,T_PROGRESS,T_DONE,T_HUMAN pipeline
+  class PASS safe
+  class ASK stop
+  class FAIL fail
+  class TOOLS,CODEAGENT tools
+  class TRIG,SCHED,HB,PROACTIVE async
+  class SRC ext
+  class SESS,SRAW,SINT,SSUM session

@@ -1,0 +1,84 @@
+{
+  "expo": {
+    "name": "Consistent CEO",
+    "slug": "consistent-world",
+    "scheme": "consistentworld",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0a0908",
+    "ios": {
+      "supportsTablet": true,
+      "requireFullScreen": false,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Consistent CEO uses the microphone only during a voice conversation. What you say streams to Consistent CEO on your computer, which sends it to the AI voice service you set up there (such as Google Gemini) to answer you.",
+        "NSLocalNetworkUsageDescription": "Consistent CEO looks for your computer on your local network so this phone can connect to it.",
+        "NSFaceIDUsageDescription": "Consistent CEO uses Face ID to unlock your encrypted vault on this device.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.devbaqshi.consistent-world"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#f2ede4",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.devbaqshi.consistentworld",
+      "permissions": [
+        "VIBRATE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Consistent CEO uses the camera to scan the pairing QR code on your computer."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Consistent CEO uses the microphone only during a voice conversation. What you say streams to Consistent CEO on your computer, which sends it to the AI voice service you set up there (such as Google Gemini) to answer you.",
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0a0908",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "dark": {
+            "backgroundColor": "#0a0908",
+            "image": "./assets/splash-icon.png"
+          }
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#c98a4b"
+        }
+      ],
+      "expo-asset",
+      "expo-status-bar"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "43928e69-c2f2-44a5-9680-27c7123b63ba"
+      }
+    },
+    "owner": "devbaqshi"
+  }
+}

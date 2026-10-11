@@ -1,0 +1,1084 @@
+<title>Consistent Architecture Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #F1F4F5;
+    --surface:    #FFFFFF;
+    --surface-2:  #E8EDEF;
+    --ink:        #17212B;
+    --ink-soft:   #35454F;
+    --muted:      #5E7080;
+    --hair:       #CFD8DC;
+    --hair-soft:  #E1E8EA;
+    --accent:     #11616F;
+    --accent-ink: #0C4B56;
+    --ok:         #37705C;
+    --ok-bg:      #E3EEE9;
+    --warn:       #8C6117;
+    --warn-bg:    #F4EBDA;
+    --crit:       #8F2F3C;
+    --crit-bg:    #F6E3E5;
+    --shadow:     0 1px 2px rgba(23,33,43,.05), 0 8px 24px -18px rgba(23,33,43,.35);
+
+    --display: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+    --body:    "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --measure: 68ch;
+    --wide:    1080px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #0E151A;
+      --surface:   #151E25;
+      --surface-2: #1C272F;
+      --ink:       #DEE7EB;
+      --ink-soft:  #B8C6CE;
+      --muted:     #8399A6;
+      --hair:      #2A3841;
+      --hair-soft: #202C34;
+      --accent:    #58A8B8;
+      --accent-ink:#7FC3D1;
+      --ok:        #74B598;
+      --ok-bg:     #16281F;
+      --warn:      #D0A24E;
+      --warn-bg:   #2A2114;
+      --crit:      #DE8B96;
+      --crit-bg:   #2C161A;
+      --shadow:    0 1px 2px rgba(0,0,0,.4), 0 10px 28px -20px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"] {
+      --paper:     #0E151A;
+      --surface:   #151E25;
+      --surface-2: #1C272F;
+      --ink:       #DEE7EB;
+      --ink-soft:  #B8C6CE;
+      --muted:     #8399A6;
+      --hair:      #2A3841;
+      --hair-soft: #202C34;
+      --accent:    #58A8B8;
+      --accent-ink:#7FC3D1;
+      --ok:        #74B598;
+      --ok-bg:     #16281F;
+      --warn:      #D0A24E;
+      --warn-bg:   #2A2114;
+      --crit:      #DE8B96;
+      --crit-bg:   #2C161A;
+      --shadow:    0 1px 2px rgba(0,0,0,.4), 0 10px 28px -20px rgba(0,0,0,.9);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 0 88px;
+  }
+
+  h1, h2, h3, .eyebrow, .stat-n, th, .sev { font-family: var(--display); }
+
+  h1 {
+    font-size: clamp(2rem, 5.2vw, 3.1rem);
+    line-height: 1.06;
+    font-weight: 700;
+    letter-spacing: -.02em;
+    margin: 0 0 .5rem;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: clamp(1.4rem, 3vw, 1.85rem);
+    line-height: 1.16;
+    font-weight: 650;
+    letter-spacing: -.015em;
+    margin: 0 0 .35rem;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1.09rem;
+    font-weight: 650;
+    letter-spacing: -.005em;
+    margin: 0 0 .3rem;
+    text-wrap: balance;
+  }
+  p { margin: 0 0 1.05rem; }
+  .measure { max-width: var(--measure); }
+
+  .eyebrow {
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .17em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 .75rem;
+  }
+
+  code, .mono { font-family: var(--mono); font-size: .87em; }
+  code {
+    background: var(--surface-2);
+    padding: .1em .34em;
+    border-radius: 3px;
+    color: var(--accent-ink);
+  }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  header.masthead {
+    border-bottom: 1px solid var(--hair);
+    padding-block: 56px 30px;
+    margin-bottom: 44px;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: .74rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 1.1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem 1.1rem;
+  }
+  .dek {
+    font-size: 1.16rem;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: .7rem 0 0;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem 1.5rem;
+    margin-top: 1.6rem;
+    font-family: var(--mono);
+    font-size: .76rem;
+    color: var(--muted);
+  }
+
+  .verdict {
+    border-left: 3px solid var(--accent);
+    padding: 2px 0 2px 22px;
+    margin-bottom: 46px;
+  }
+  .verdict .lede {
+    font-size: 1.3rem;
+    line-height: 1.42;
+    margin-bottom: 1rem;
+    max-width: 60ch;
+  }
+  .verdict p { max-width: var(--measure); }
+
+  section { margin-bottom: 54px; }
+
+  .scorecard {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+    gap: 1px;
+    background: var(--hair);
+    border: 1px solid var(--hair);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 26px 0 14px;
+  }
+  .sc-cell {
+    background: var(--surface);
+    padding: 15px 16px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .stat-n {
+    font-size: 1.62rem;
+    font-weight: 650;
+    letter-spacing: -.02em;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .sc-cell .lbl { font-size: .81rem; color: var(--muted); line-height: 1.32; }
+  .n-ok { color: var(--ok); } .n-warn { color: var(--warn); } .n-crit { color: var(--crit); }
+
+  .tablewrap {
+    overflow-x: auto;
+    border: 1px solid var(--hair);
+    border-radius: 6px;
+    background: var(--surface);
+    margin: 22px 0;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 560px; }
+  th {
+    text-align: left;
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  td {
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--hair-soft);
+    vertical-align: top;
+    line-height: 1.48;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.mono-cell { font-family: var(--mono); font-size: .79rem; }
+
+  .pill, .sev {
+    display: inline-block;
+    font-family: var(--display);
+    font-size: .67rem;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    padding: 2.5px 7px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .p-ok { background: var(--ok-bg); color: var(--ok); }
+  .p-warn { background: var(--warn-bg); color: var(--warn); }
+  .p-crit { background: var(--crit-bg); color: var(--crit); }
+
+  .finding {
+    border-top: 1px solid var(--hair);
+    padding-top: 22px;
+    margin-top: 26px;
+  }
+  .finding-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: .55rem;
+  }
+  .finding-head h3 { margin: 0; }
+  .finding > .measure { max-width: var(--measure); }
+
+  .evidence {
+    font-family: var(--mono);
+    font-size: .78rem;
+    line-height: 1.75;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--hair-soft);
+    border-left: 2px solid var(--hair);
+    border-radius: 0 4px 4px 0;
+    padding: 11px 14px;
+    margin: 14px 0 0;
+    overflow-x: auto;
+  }
+  .evidence b { color: var(--ink); font-weight: 500; }
+  .evidence .k { color: var(--accent); }
+
+  .fixline {
+    margin-top: 14px;
+    padding-left: 14px;
+    border-left: 2px solid var(--accent);
+    font-size: .95rem;
+    color: var(--ink-soft);
+    max-width: var(--measure);
+  }
+  .fixline strong { font-family: var(--display); font-weight: 600; color: var(--ink); }
+
+  .bug {
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    border-top: 3px solid var(--crit);
+    border-radius: 0 0 6px 6px;
+    padding: 22px 24px;
+    margin: 26px 0;
+    box-shadow: var(--shadow);
+  }
+  .bug h3 { margin-bottom: .45rem; }
+  .bug > p, .bug > ol { max-width: var(--measure); }
+  .bug ol { padding-left: 1.2rem; margin: 0 0 1rem; }
+  .bug ol li { margin-bottom: .5rem; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: .8rem;
+    line-height: 1.6;
+    background: var(--surface-2);
+    border: 1px solid var(--hair-soft);
+    border-radius: 5px;
+    padding: 13px 15px;
+    overflow-x: auto;
+    margin: 0 0 1rem;
+    color: var(--ink);
+  }
+  pre .c { color: var(--muted); }
+  pre .hl { color: var(--crit); font-weight: 700; }
+
+  figure {
+    margin: 30px 0;
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    border-radius: 6px;
+    padding: 22px 20px 16px;
+  }
+  figure.bare { background: transparent; border: 0; padding: 0; margin: 20px 0 22px; }
+  figure svg { display: block; width: 100%; max-width: 100%; height: auto; color: var(--ink); }
+  figcaption {
+    font-size: .84rem;
+    color: var(--muted);
+    line-height: 1.5;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--hair-soft);
+    max-width: 76ch;
+  }
+  figcaption b { color: var(--ink-soft); font-weight: 600; }
+  figure.bare figcaption { border-top-color: var(--hair-soft); }
+  .figscroll { overflow-x: auto; }
+
+  .goods {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+    gap: 18px 26px;
+    margin-top: 24px;
+  }
+  .good { border-top: 2px solid var(--ok); padding-top: 11px; }
+  .good h3 { font-size: .97rem; margin-bottom: .2rem; }
+  .good p { font-size: .89rem; color: var(--ink-soft); margin: 0; }
+
+  .phase {
+    border-top: 1px solid var(--hair);
+    margin-top: 34px;
+    padding-top: 20px;
+  }
+  .phase-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: .4rem;
+  }
+  .phase-n {
+    font-family: var(--display);
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .phase-head h3 { margin: 0; font-size: 1.16rem; }
+  .phase > p { max-width: var(--measure); font-size: .95rem; color: var(--ink-soft); }
+  .phase ul { margin: 0; padding-left: 1.15rem; max-width: 70ch; }
+  .phase li { margin-bottom: .55rem; font-size: .93rem; }
+  .phase li strong { font-family: var(--display); font-weight: 600; }
+
+  footer.end {
+    border-top: 1px solid var(--hair);
+    margin-top: 44px;
+    padding-top: 22px;
+    font-size: .84rem;
+    color: var(--muted);
+    max-width: 74ch;
+  }
+  footer.end p { margin-bottom: .6rem; }
+
+  @media (max-width: 620px) {
+    body { font-size: 16px; }
+    .verdict { padding-left: 16px; }
+    .verdict .lede { font-size: 1.14rem; }
+    figure { padding: 16px 13px 12px; }
+    .bug { padding: 18px 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <p class="kicker">
+      <span>Architecture review</span>
+      <span>13 crates &middot; 101k lines Rust</span>
+      <span>feat/architect-phase-2 @ 8bc455ae</span>
+    </p>
+    <h1>Is this spaghetti?</h1>
+    <p class="dek">
+      A measured structural assessment of the Consistent CEO codebase &mdash; what holds up,
+      where the tangle actually is, and eight defects in the concurrent core that are not
+      style questions at all.
+    </p>
+    <p class="meta-row">
+      <span>Reviewed 13 September 2026</span>
+      <span>Every number measured; every defect read at the cited line</span>
+    </p>
+  </header>
+
+  <div class="verdict">
+    <p class="eyebrow">The short answer</p>
+    <p class="lede">
+      No &mdash; not in the way the word usually means. The small-scale craft here is better
+      than most production codebases. But the concurrent core has a defect class that the
+      clean code hides, and it is the thing standing between this and production.
+    </p>
+    <p>
+      Line by line this reads like careful work. The median function is 13 lines. There are
+      14 panicking calls in 71,860 lines of gateway code. Roughly 1,000 tests. Forcing the
+      dead-code lint past the crate-level allow turns up 25 unused items, 19 of them
+      deliberate compile-time guards. Module headers explain <em>why</em> a decision was made
+      rather than restating the code. That is not an abandoned codebase, and it is not spaghetti.
+    </p>
+    <p>
+      One level up, the structure has a single root cause. <code>state.rs</code> is
+      simultaneously the domain type library, the in-memory store, the persistence
+      orchestrator and the notification sink. Because the 63 domain types live there, every
+      store imports from the runtime-state module and the runtime-state module imports the
+      stores back &mdash; which is 20 of the 42 circular module pairs on its own.
+    </p>
+    <p>
+      The urgent finding is different and worse. Six background loops mutate the same task
+      rows, and exactly one of them claims a row correctly before writing it. The others read
+      an index, <code>await</code>, and then write. I verified eight concrete defects that
+      follow from this, including one that can hand an operator's cancelled task to an
+      unattended agent &mdash; or panic and silently stop five subsystems for the rest of the
+      process lifetime. None of them would be caught by a linter, a type checker, or the
+      existing test suite.
+    </p>
+  </div>
+
+  <section>
+    <p class="eyebrow">Measured</p>
+    <h2>What the numbers say</h2>
+    <p class="measure">
+      Two groups, and the split is the story. The first is what good practice looks like. The
+      second is what six months of fast feature work did to the module graph and the loops.
+    </p>
+
+    <div class="scorecard">
+      <div class="sc-cell"><span class="stat-n n-ok">13</span><span class="lbl">median function length, lines</span></div>
+      <div class="sc-cell"><span class="stat-n n-ok">14</span><span class="lbl"><code>unwrap</code>/<code>expect</code> in production paths</span></div>
+      <div class="sc-cell"><span class="stat-n n-ok">~1,000</span><span class="lbl">test functions across 13 crates</span></div>
+      <div class="sc-cell"><span class="stat-n n-ok">25</span><span class="lbl">dead items, forced lint (19 intentional)</span></div>
+      <div class="sc-cell"><span class="stat-n n-crit">1 of 6</span><span class="lbl">task-writing loops that claim a row safely</span></div>
+      <div class="sc-cell"><span class="stat-n n-crit">42</span><span class="lbl">circular module pairs, of 77 modules</span></div>
+      <div class="sc-cell"><span class="stat-n n-crit">23</span><span class="lbl">of 28 state collections have no row table</span></div>
+      <div class="sc-cell"><span class="stat-n n-warn">95</span><span class="lbl">modules compiled twice per build</span></div>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Signal</th><th class="num">Measured</th><th>Reading</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Functions over 100 lines</td><td class="num">57 / 1,562</td>
+            <td><span class="pill p-ok">healthy</span> 3.6%. Worst are <code>main()</code> at 989 and <code>run_agent()</code> at 750 &mdash; a boot sequence and one coherent engine, not tangles.</td>
+          </tr>
+          <tr>
+            <td>Cross-file copy-paste</td><td class="num">12 groups</td>
+            <td><span class="pill p-ok">healthy</span> Nearly all are test fixtures hand-building the same <code>Mission</code>. A test builder would erase them.</td>
+          </tr>
+          <tr>
+            <td>Cross-crate layering</td><td class="num">clean</td>
+            <td><span class="pill p-ok">healthy</span> Lower crates carry no entity or mission vocabulary. The workspace split is real.</td>
+          </tr>
+          <tr>
+            <td>SQL injection surface</td><td class="num">0</td>
+            <td><span class="pill p-ok">healthy</span> 14 <code>format!</code>-built queries, all interpolating compile-time constants or clamped integers. User data is bound.</td>
+          </tr>
+          <tr>
+            <td>Task status mutation points</td><td class="num">21 in 15 files</td>
+            <td><span class="pill p-crit">defect source</span> 8 assign <code>status</code> raw, bypassing even the stamping helper, so <code>status_changed_at</code> is unreliable.</td>
+          </tr>
+          <tr>
+            <td>Authoritative task state machine</td><td class="num">none</td>
+            <td><span class="pill p-crit">defect source</span> No transition table, no validator. One opt-in guard with a single rule, used at 5 of ~40 sites.</td>
+          </tr>
+          <tr>
+            <td><code>state.rs</code></td><td class="num">3,253</td>
+            <td><span class="pill p-crit">structural</span> 1,484 of those lines are 63 domain types that belong in a layer below.</td>
+          </tr>
+          <tr>
+            <td><code>record_id_key</code> definitions</td><td class="num">13</td>
+            <td><span class="pill p-warn">duplication</span> Identical helper pasted into 13 stores. No shared persistence module exists.</td>
+          </tr>
+          <tr>
+            <td>Persistence mechanisms for one truth</td><td class="num">3</td>
+            <td><span class="pill p-crit">structural</span> JSON file, Surreal blob, row tables &mdash; reconciled by three different boot policies.</td>
+          </tr>
+          <tr>
+            <td>Largest Svelte page file</td><td class="num">4,356</td>
+            <td><span class="pill p-crit">structural</span> One route: 1,340 lines of script, 1,898 of its own CSS.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Not debt &mdash; defects</p>
+    <h2>Eight bugs in the concurrent core</h2>
+    <p class="measure">
+      The gateway runs nine background loops in one process. Six of them write task or mission
+      rows. The state is a <code>RwLock&lt;Vec&lt;Task&gt;&gt;</code>, mutated by
+      read&#8209;modify&#8209;write, with no <code>owner</code> field, no lease, and no version
+      column. Coordination is convention, and the convention is not uniform.
+    </p>
+    <p class="measure">
+      <code>task_executor</code> gets it right: it re-checks the row under the write lock,
+      re-asserts the status, stamps its claim markers and persists immediately, so the claim
+      survives a crash. Nothing else copied that. What follows is what happens instead.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Defect</th><th>Mechanism</th><th class="num">Severity</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Stale index write</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">orchestrator.rs:340&rarr;458</span></td>
+            <td>Captures a <code>Vec</code> index, awaits a database query, then writes <code>tasks[i]</code>. An entity delete <code>retain</code>s the vec in between and shifts every later index.</td>
+            <td class="num"><span class="sev p-crit">critical</span></td>
+          </tr>
+          <tr>
+            <td><b>Sync deletes on a failed read</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">entity_store.rs:344</span></td>
+            <td>Periodic sync deletes any row absent from in-memory state. Boot hydration failure is a <code>warn!</code> that continues with stale memory.</td>
+            <td class="num"><span class="sev p-crit">critical</span></td>
+          </tr>
+          <tr>
+            <td><b>Snapshot / feed deadlock</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">state.rs:1838, 1937</span></td>
+            <td>Two functions take the same two locks in opposite orders; one holds a write guard across two I/O awaits. Tokio's <code>RwLock</code> is fair, which closes the cycle.</td>
+            <td class="num"><span class="sev p-crit">critical</span></td>
+          </tr>
+          <tr>
+            <td><b>Mission engine dies after 3 restarts</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">state.rs:1736</span></td>
+            <td>Restart recovery requeues <code>InProgress</code> tasks and exempts only <code>external-agent-run</code>. The beat task is <code>agent-session-beat</code>, so <code>tries</code> climbs to the cap and it is marked <code>Failed</code> &mdash; which the due-check excludes forever.</td>
+            <td class="num"><span class="sev p-crit">high</span></td>
+          </tr>
+          <tr>
+            <td><b>Cancelled task resurrected</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">orchestrator.rs:671</span></td>
+            <td>The <code>Err</code> branch assigns <code>Failed</code> raw with no <code>Cancelled</code> check. The commit that fixed four such closers missed this one.</td>
+            <td class="num"><span class="sev p-crit">high</span></td>
+          </tr>
+          <tr>
+            <td><b>Reminder fires twice</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">reminders.rs:274</span></td>
+            <td>Skips <code>Completed|Cancelled|Failed</code> but not <code>InProgress</code>, and reminders are not in the orchestrator's exclusion set or the routing table, so a director also claims them.</td>
+            <td class="num"><span class="sev p-warn">medium</span></td>
+          </tr>
+          <tr>
+            <td><b>Beat double-run window</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">mission_engine.rs:308</span></td>
+            <td>The only interlock is a process-registry check, and the next-beat time is not advanced until the beat finishes. Two Claude sessions can start on the same directory.</td>
+            <td class="num"><span class="sev p-warn">medium</span></td>
+          </tr>
+          <tr>
+            <td><b>Chat overwrites loop writes</b><br><span class="mono" style="font-size:.76rem;color:var(--muted)">chat_tools.rs:1347&rarr;1419</span></td>
+            <td>Clones the whole <code>Task</code>, mutates the clone, then assigns it back over the row. Concurrent claim markers and budget counters are silently lost.</td>
+            <td class="num"><span class="sev p-warn">medium</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="bug">
+      <h3>The worst one, in detail</h3>
+      <p>
+        The orchestrator's task pickup collects candidates as <code>Vec</code>
+        <em>indices</em> under a read lock, drops the lock, then awaits a Surreal memory recall
+        once per candidate entity. When it takes the write lock again it writes
+        <code>tasks[i]</code> by that index &mdash; and reads the task's <code>id</code>
+        only <em>after</em> the mutations.
+      </p>
+      <pre><span class="c">// orchestrator.rs:340 — indices captured, lock released</span>
+let candidates: Vec&lt;(usize, Option&lt;String&gt;, String, Option&lt;String&gt;)&gt; = {
+    let tasks = control.tasks.read().await;
+    …  Some((i, t.entity_id.clone(), t.title.clone(), t.task_kind.clone()))
+};
+
+<span class="c">// orchestrator.rs:395 — one database round-trip per entity, lock not held</span>
+let lines = entity_memory::recall_entity_short(mem.clone(), &amp;eid, 16).await;
+
+<span class="c">// orchestrator.rs:449 — writes by the old index, no re-check</span>
+let mut tasks = control.tasks.write().await;
+tasks[i].status = TaskStatus::InProgress;   <span class="hl">// raw assign, guard bypassed</span>
+let id = tasks[i].id.clone();               <span class="hl">// id read after mutating</span></pre>
+      <p>
+        The task vector is append-only almost everywhere &mdash; except entity deletion, which
+        removes from the middle:
+      </p>
+      <pre><span class="c">// control_api/entity_import_api.rs:1136</span>
+s.tasks.write().await.retain(|t| !task_references_entity(t, &amp;id));</pre>
+
+      <figure class="bare">
+        <div class="figscroll">
+        <svg viewBox="0 0 900 258" role="img" aria-label="A timeline with two lanes. The orchestrator captures task index seven under a read lock, releases it, then spends a long window awaiting one database query per candidate entity. During that window an operator deletes an entity, which retains the task vector and shifts all later indices left by three. The orchestrator then writes index seven, which now points at a different task, or panics if the vector shrank below that length." xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="tl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,1 L9,5 L0,9 z" fill="#8F2F3C"/>
+            </marker>
+          </defs>
+
+          <text x="10" y="16" font-family="Familjen Grotesk, sans-serif" font-size="10.5" font-weight="700" letter-spacing="1.3" fill="currentColor" fill-opacity=".62">ORCHESTRATOR TICK</text>
+          <line x1="10" y1="94" x2="890" y2="94" stroke="currentColor" stroke-opacity=".22"/>
+
+          <!-- await window bar -->
+          <rect x="196" y="50" width="330" height="26" rx="3" fill="currentColor" fill-opacity=".07" stroke="currentColor" stroke-opacity=".3"/>
+          <text x="361" y="67" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="currentColor" fill-opacity=".8">await recall_entity_short &#215; one per entity &#8212; lock NOT held</text>
+
+          <!-- t1 -->
+          <circle cx="100" cy="94" r="4.5" fill="currentColor"/>
+          <line x1="100" y1="76" x2="100" y2="90" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="100" y="40" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="currentColor">read lock</text>
+          <text x="100" y="53" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="currentColor">capture i = 7</text>
+          <text x="100" y="66" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="currentColor" fill-opacity=".65">&rarr; task T&#8321;</text>
+
+          <!-- t3 write -->
+          <circle cx="640" cy="94" r="4.5" fill="#8F2F3C"/>
+          <line x1="640" y1="76" x2="640" y2="90" stroke="#8F2F3C" stroke-opacity=".6"/>
+          <text x="640" y="40" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="currentColor">write lock</text>
+          <text x="640" y="53" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="#8F2F3C">tasks[7] = InProgress</text>
+
+          <text x="672" y="88" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="#8F2F3C">&rarr; now task T&#8322;</text>
+          <text x="672" y="101" font-family="JetBrains Mono, monospace" font-size="9" fill="#8F2F3C">or panic if len &#8804; 7</text>
+
+          <!-- operator lane -->
+          <text x="10" y="146" font-family="Familjen Grotesk, sans-serif" font-size="10.5" font-weight="700" letter-spacing="1.3" fill="currentColor" fill-opacity=".62">OPERATOR &#183; DELETE ENTITY</text>
+          <line x1="10" y1="196" x2="890" y2="196" stroke="currentColor" stroke-opacity=".22"/>
+
+          <circle cx="400" cy="196" r="4.5" fill="currentColor"/>
+          <text x="400" y="172" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="currentColor">tasks.retain(&#8230;)</text>
+          <text x="400" y="185" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="currentColor" fill-opacity=".7">removes 3 rows from the middle</text>
+
+          <!-- shift arrow -->
+          <path d="M400,204 C400,232 640,232 640,110" fill="none" stroke="#8F2F3C" stroke-width="1.6" marker-end="url(#tl)"/>
+          <text x="520" y="248" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="#8F2F3C">every later index shifts left by 3</text>
+        </svg>
+        </div>
+        <figcaption>
+          <b>The window is wide on purpose, not by accident.</b> It spans one database query per
+          candidate entity, so it grows with the number of entities that have tasks queued. Both
+          outcomes are bad: an arbitrary task &mdash; possibly one the operator just cancelled,
+          since the write bypasses the cancellation guard &mdash; is stamped
+          <code>InProgress</code> and handed to an unattended agent; or the index is out of
+          bounds and <code>tasks[i]</code> panics. The orchestrator is a bare
+          <code>tokio::spawn</code> whose handle is only touched at shutdown, so that panic is
+          swallowed and the tick stops permanently, taking the mission goal loop, the stuck-task
+          watchdog, mission-gap reporting and recurring-plan spawning with it.
+        </figcaption>
+      </figure>
+
+      <p class="fixline" style="border-color:var(--crit)">
+        <strong>Fix:</strong> re-find the task by <code>id</code> under the write lock and
+        re-assert that its status is still <code>Backlog</code> or <code>Queued</code> before
+        writing &mdash; exactly what <code>task_executor</code> already does. Then make
+        <code>set_task_status_guarded</code> the only public setter, so the other seven defects
+        cannot be written again.
+      </p>
+    </div>
+
+    <p class="measure">
+      Worth noting what is <em>not</em> broken here. The heartbeat table has a real distributed
+      lease &mdash; a conditional <code>UPDATE</code> with a lease token and expiry, plus a
+      process-local in-flight set, and the schedule is bumped before dispatch so a crash skips a
+      beat rather than double-running it. That is the correct pattern, built once, for the one
+      table where duplicates were actually observed. The gap is that it was never generalised to
+      tasks.
+    </p>
+  </section>
+
+  <section>
+    <p class="eyebrow">The shape</p>
+    <h2>Where the coupling is</h2>
+    <p class="measure">
+      The dependency arrow runs backwards. Stores need the domain types, the types live in the
+      state module, so every store imports <code>state</code>. Meanwhile <code>state</code>
+      holds a handle to every store so it can write through. Both directions are necessary given
+      where the types sit &mdash; which makes this a location problem, not a discipline problem,
+      and means moving 1,484 lines fixes it.
+    </p>
+
+    <figure>
+      <div class="figscroll">
+      <svg viewBox="0 0 1020 470" role="img" aria-label="Left: state.rs sits between the HTTP and loop layer above and nineteen store modules below, with arrows running in both directions to the stores, producing forty-two circular module pairs. Right: the target layering, where a new domain module holds the sixty-three types at the bottom and every arrow points one way downward, removing twenty of the forty-two cycles." xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="currentColor"/>
+          </marker>
+          <marker id="arW" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="#8F2F3C"/>
+          </marker>
+          <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="#11616F"/>
+          </marker>
+        </defs>
+
+        <text x="14" y="22" font-family="Familjen Grotesk, sans-serif" font-size="13" font-weight="700" fill="currentColor" letter-spacing="1.6">NOW</text>
+        <line x1="14" y1="31" x2="470" y2="31" stroke="currentColor" stroke-opacity=".18"/>
+
+        <rect x="14" y="52" width="456" height="42" rx="4" fill="none" stroke="currentColor" stroke-opacity=".42"/>
+        <text x="242" y="72" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="currentColor">control_api &#183; server &#183; 9 background loops</text>
+        <text x="242" y="86" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9.5" fill="currentColor" fill-opacity=".6">control_api depends on 35 modules</text>
+
+        <rect x="122" y="176" width="240" height="86" rx="4" fill="#8F2F3C" fill-opacity=".07" stroke="#8F2F3C" stroke-width="1.6"/>
+        <text x="242" y="203" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="currentColor">state.rs</text>
+        <text x="242" y="222" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="currentColor" fill-opacity=".75">63 domain types &#183; 28 locks</text>
+        <text x="242" y="237" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="currentColor" fill-opacity=".75">8 store handles &#183; feed sink</text>
+        <text x="242" y="252" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#8F2F3C" font-weight="700">four jobs in one file</text>
+
+        <line x1="242" y1="96" x2="242" y2="172" stroke="currentColor" stroke-opacity=".5" marker-end="url(#ar)"/>
+        <text x="252" y="140" font-family="JetBrains Mono, monospace" font-size="9.5" fill="currentColor" fill-opacity=".65">reads + mutates</text>
+
+        <rect x="14" y="344" width="456" height="46" rx="4" fill="none" stroke="currentColor" stroke-opacity=".42"/>
+        <text x="242" y="364" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="currentColor">entity_store &#183; mission_store &#183; task_store &#183; feed_store</text>
+        <text x="242" y="379" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9.5" fill="currentColor" fill-opacity=".6">+ 15 more, each with its own ad-hoc API</text>
+
+        <line x1="196" y1="266" x2="196" y2="340" stroke="#8F2F3C" stroke-width="1.7" marker-end="url(#arW)"/>
+        <line x1="292" y1="340" x2="292" y2="266" stroke="#8F2F3C" stroke-width="1.7" marker-end="url(#arW)"/>
+        <text x="20" y="292" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#8F2F3C" font-weight="700">holds handles,</text>
+        <text x="20" y="305" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#8F2F3C" font-weight="700">writes through</text>
+        <text x="312" y="292" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#8F2F3C" font-weight="700">imports Task,</text>
+        <text x="312" y="305" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#8F2F3C" font-weight="700">Entity, Mission&#8230;</text>
+
+        <rect x="14" y="414" width="456" height="40" rx="4" fill="#8F2F3C" fill-opacity=".07" stroke="#8F2F3C" stroke-opacity=".5"/>
+        <text x="242" y="439" text-anchor="middle" font-family="Familjen Grotesk, sans-serif" font-size="12.5" font-weight="600" fill="currentColor">42 circular module pairs &#183; 20 run through state.rs</text>
+
+        <line x1="510" y1="40" x2="510" y2="454" stroke="currentColor" stroke-opacity=".14"/>
+
+        <text x="550" y="22" font-family="Familjen Grotesk, sans-serif" font-size="13" font-weight="700" fill="#11616F" letter-spacing="1.6">TARGET</text>
+        <line x1="550" y1="31" x2="1006" y2="31" stroke="#11616F" stroke-opacity=".3"/>
+
+        <rect x="550" y="52" width="456" height="42" rx="4" fill="none" stroke="currentColor" stroke-opacity=".42"/>
+        <text x="778" y="72" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="currentColor">control_api &#183; server &#183; 9 background loops</text>
+        <text x="778" y="86" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9.5" fill="currentColor" fill-opacity=".6">unchanged</text>
+
+        <rect x="550" y="146" width="456" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity=".42"/>
+        <text x="778" y="167" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="currentColor">state.rs &#8212; ControlState only</text>
+        <text x="778" y="184" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#11616F">~250 lines: the 28 locks and their setters</text>
+
+        <rect x="550" y="250" width="456" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity=".42"/>
+        <text x="778" y="271" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="currentColor">store/ &#8212; 19 stores + one shared base</text>
+        <text x="778" y="288" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#11616F">record_id_key once &#183; row decoding once &#183; migrations</text>
+
+        <rect x="550" y="354" width="456" height="52" rx="4" fill="#11616F" fill-opacity=".08" stroke="#11616F" stroke-width="1.6"/>
+        <text x="778" y="375" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" font-weight="700" fill="currentColor">domain/ &#8212; the 63 types</text>
+        <text x="778" y="392" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#11616F">task &#183; mission &#183; entity &#183; feed &#183; director &#183; heartbeat</text>
+
+        <line x1="778" y1="96" x2="778" y2="142" stroke="#11616F" stroke-width="1.6" marker-end="url(#arA)"/>
+        <line x1="778" y1="200" x2="778" y2="246" stroke="#11616F" stroke-width="1.6" marker-end="url(#arA)"/>
+        <line x1="778" y1="304" x2="778" y2="350" stroke="#11616F" stroke-width="1.6" marker-end="url(#arA)"/>
+        <path d="M560,166 C520,166 520,380 560,380" fill="none" stroke="#11616F" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arA)"/>
+        <text x="795" y="123" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#11616F">depends on</text>
+        <text x="795" y="227" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#11616F">depends on</text>
+        <text x="795" y="331" font-family="JetBrains Mono, monospace" font-size="9.5" fill="#11616F">depends on</text>
+
+        <rect x="550" y="414" width="456" height="40" rx="4" fill="#11616F" fill-opacity=".08" stroke="#11616F" stroke-opacity=".5"/>
+        <text x="778" y="439" text-anchor="middle" font-family="Familjen Grotesk, sans-serif" font-size="12.5" font-weight="600" fill="currentColor">20 cycles gone &#183; pure moves, no behaviour change</text>
+      </svg>
+      </div>
+      <figcaption>
+        <b>The only edge that changes is the red one.</b> Those 1,484 lines of type declarations
+        have almost nothing holding them in place: across all of them there are two constant
+        references and two config imports. Five of the domains defined there &mdash;
+        <code>Director</code>, <code>DirectorLesson</code>, <code>EntityDoc</code>,
+        <code>EntityRecord</code>, <code>Heartbeat</code> &mdash; are not held in any lock in
+        that file at all; they live only in stores. The repo has already proved this kind of
+        move is safe here: <code>control_api.rs</code> went from 12,449 lines to 3,741 across 23
+        modules with a byte-identical test count.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <p class="eyebrow">Three more structural findings</p>
+    <h2>Persistence, stores, and the build</h2>
+
+    <div class="finding">
+      <div class="finding-head">
+        <h3>Three persistence mechanisms, three boot policies, one truth</h3>
+        <span class="pill p-crit">data risk</span>
+      </div>
+      <div class="measure">
+        <p>
+          The same state is written three ways every 60 seconds: a JSON file, a whole-blob
+          Surreal snapshot, and per-row tables. Only 5 of the 28 collections have a row table.
+          Of the other 23, roughly 14 are operational rather than configuration &mdash; pending
+          approvals, entity connections and their OAuth sessions, in-flight agent runs,
+          verifications, raw captures, chat attachments.
+        </p>
+        <p>
+          The codebase already documents why the blob is unsafe. <code>task_store.rs</code>
+          opens by explaining that it loses races during a zero-downtime redeploy, because a
+          booting instance clobbers whatever the outgoing one flushed on shutdown. That
+          reasoning was applied to tasks, missions, entities and the feed. The remaining 23
+          collections inherit exactly the bug the note describes.
+        </p>
+        <p>
+          Boot reconciliation then uses three different policies for three collections that
+          reference each other: rows win for entities and missions, memory wins for tasks. A
+          task can survive the merge and re-attach to an entity that no longer exists.
+        </p>
+      </div>
+      <p class="evidence"><b>ControlState</b> 28 collections &rarr; row-backed <span class="k">5</span> &#183; blob-only <span class="k">23</span><br>operator feed keeps <span class="k">500</span> rows in memory, <span class="k">2,000</span> in Surreal, and never hydrates the database copy at boot<br><code>ControlStateSnapshot</code> has <span class="k">9</span> fields with no <code>#[serde(default)]</code> &mdash; adding a tenth discards all state on deploy</p>
+      <p class="fixline"><strong>Fix:</strong> row tables for approvals and entity connections first &mdash; those are the two a user notices losing &mdash; then shrink the blob to the singleton config it is genuinely good at.</p>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head">
+        <h3>Nineteen stores, no store layer</h3>
+        <span class="pill p-warn">duplication</span>
+      </div>
+      <div class="measure">
+        <p>
+          The stores look like a layer because they follow the same conventions closely. They
+          are not one: the conventions are copy-paste. <code>record_id_key</code> is defined
+          identically in 13 files. Row decoding splits three incompatible ways, and two of
+          those carry comments making contradictory claims about what the Surreal serialiser
+          accepts &mdash; one of them is wrong and nobody reconciled them.
+        </p>
+        <p>
+          The consequence that bites is <code>init_schema</code>. All 17 collect
+          per&#8209;statement errors into a <code>warn!</code> and return <code>Ok(())</code>,
+          so the function structurally cannot report a schema failure. Callers then log
+          &ldquo;persistence disabled&rdquo; and use the store anyway. For the auth table that
+          matters: a <code>UNIQUE</code> index on <code>username</code> is the only thing
+          backing a check-then-insert registration path, and if it fails to define, the gateway
+          boots looking healthy with duplicate usernames possible.
+        </p>
+        <p>
+          There is no migration mechanism &mdash; no version table, no ordered steps, no
+          backfill. Additive <code>Option</code> fields are safe. Nothing else is.
+        </p>
+      </div>
+      <p class="evidence"><b>record_id_key</b> in 13 files &#183; <b>init_schema</b> in 17 stores, all returning <span class="k">Ok(())</span> unconditionally<br>migration mechanism <span class="k">none</span> &#183; <code>SCHEMAFULL</code> tables <span class="k">0</span> &#183; typed store errors <span class="k">0</span> of 19</p>
+      <p class="fixline"><strong>Fix:</strong> one shared <code>store</code> module for the helpers, then split required DDL from advisory so a failed <code>UNIQUE</code> index aborts startup instead of warning.</p>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head">
+        <h3>Every module compiles twice</h3>
+        <span class="pill p-warn">build cost</span>
+      </div>
+      <div class="measure">
+        <p>
+          <code>lib.rs</code> declares 95 modules. <code>main.rs</code> declares the same 95
+          again plus <code>wizard</code>, and imports nothing from the library beside it &mdash;
+          zero references to <code>consistent_world_gateway::</code>. So rustc builds the whole
+          71,860-line tree once for the library target and once for the binary. Every
+          incremental build, every <code>cargo check</code>, every CI run pays twice.
+        </p>
+        <p>
+          This is also the likely root of a symptom already worked around: CI sets
+          <code>CARGO_PROFILE_DEV_DEBUG=0</code> because linking the test binaries exhausted
+          the runner.
+        </p>
+      </div>
+      <p class="evidence"><b>lib.rs</b> <span class="k">95</span> <code>pub mod</code> &#183; <b>main.rs</b> <span class="k">96</span> <code>mod</code> &#183; overlap <span class="k">95</span> &#183; items main.rs uses from the lib target <span class="k">0</span></p>
+      <p class="fixline"><strong>Fix:</strong> delete the <code>mod</code> block from <code>main.rs</code>, move <code>wizard</code> into the library, reduce <code>main</code> to a call into it. One file.</p>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head">
+        <h3>Four answers to &ldquo;is this mission done?&rdquo;, and they disagree</h3>
+        <span class="pill p-warn">divergence</span>
+      </div>
+      <div class="measure">
+        <p>
+          Four places independently tally a mission's task statuses, and they do not agree on
+          three inputs: a cancelled task among completed ones, a mission with zero tasks, and a
+          completed task still flagged for human approval. Each reading is defensible alone;
+          all are reachable; nothing reconciles them.
+        </p>
+        <p>
+          Underneath that, two modules implement the same seven-step mission completion
+          sequence independently &mdash; and one of the steps writes a
+          once&#8209;per&#8209;workspace activation metric. A metric with that contract written
+          from two places is a correctness hazard, not untidiness.
+        </p>
+      </div>
+      <p class="fixline"><strong>Fix:</strong> one mission-state module answering the tally question once, with a test naming each of the three contested choices, and one lifecycle module owning the terminal transitions.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">The other half of the product</p>
+    <h2>The frontend is the real tangle</h2>
+    <p class="measure">
+      The Rust gets the scrutiny; the Svelte app is where the spaghetti actually is. It is
+      31,817 lines across 73 files, and 73% sits inside route files rather than anything
+      shared. One page is 4,356 lines &mdash; 1,340 of script, 1,898 of its own CSS, 107
+      reactive declarations and 71 local functions in a single component.
+    </p>
+    <p class="measure">
+      There are 9,025 lines of CSS inside route files across 18 pages, against 33 shared
+      components totalling 4,362 lines. That ratio is the finding: with no design system,
+      every page reinvents its own spacing, colour and controls. Credit where due &mdash; all
+      17 pages go through the typed client and only one raw <code>fetch</code> exists anywhere,
+      so the data layer is disciplined even where the view layer is not.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Route file</th><th class="num">Lines</th><th class="num">Own CSS</th></tr></thead>
+        <tbody>
+          <tr><td class="mono-cell">entities/[id]/+page.svelte</td><td class="num">4,356</td><td class="num">1,898</td></tr>
+          <tr><td class="mono-cell">+page.svelte</td><td class="num">3,359</td><td class="num">&mdash;</td></tr>
+          <tr><td class="mono-cell">vault/+page.svelte</td><td class="num">2,624</td><td class="num">&mdash;</td></tr>
+          <tr><td class="mono-cell">settings/+page.svelte</td><td class="num">2,547</td><td class="num">&mdash;</td></tr>
+          <tr><td class="mono-cell">All 33 shared components combined</td><td class="num">4,362</td><td class="num">&mdash;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="measure" style="margin-bottom:0">
+      Lower risk than the persistence findings &mdash; a messy component cannot lose an
+      approval &mdash; but it is what will most slow down shipping UI, and it is the least
+      visible in review because no single file fails a linter.
+    </p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Fair credit</p>
+    <h2>What is genuinely good</h2>
+    <p class="measure">
+      A review that only lists problems misleads. Several things here are better than the
+      median production Rust codebase, and they are why the fixes above are tractable rather
+      than hopeless.
+    </p>
+    <div class="goods">
+      <div class="good">
+        <h3>Panic discipline</h3>
+        <p>14 <code>unwrap</code>/<code>expect</code> calls in production paths across 71,860 lines. The other 672 are in tests, where they belong.</p>
+      </div>
+      <div class="good">
+        <h3>Function size</h3>
+        <p>Median 13 lines, only 3.6% over 100. The outliers are a boot sequence and prompt builders, not tangled logic.</p>
+      </div>
+      <div class="good">
+        <h3>Comments that carry decisions</h3>
+        <p>Headers explain why a guarded status setter exists and which human flow needs the unguarded one. Reasoning, not restatement.</p>
+      </div>
+      <div class="good">
+        <h3>Almost no cruft</h3>
+        <p>Forcing the dead-code lint past the crate-level allow yields 25 items, 19 of them deliberate completeness guards.</p>
+      </div>
+      <div class="good">
+        <h3>Query hygiene</h3>
+        <p>Every user-supplied value is bound. The <code>format!</code>-built queries interpolate only constants and clamped integers.</p>
+      </div>
+      <div class="good">
+        <h3>One loop does it right</h3>
+        <p><code>task_executor</code> claims a row under the write lock, re-asserts status, and persists the claim so it survives a crash. The pattern to copy already exists in-tree.</p>
+      </div>
+      <div class="good">
+        <h3>A real distributed lease</h3>
+        <p>Heartbeats use a conditional database update with a lease token and expiry, bumping the schedule before dispatch so a crash skips rather than duplicates.</p>
+      </div>
+      <div class="good">
+        <h3>Evidence over claims</h3>
+        <p>An unattended run that reports success with no diff is downgraded, not trusted. Non-git directories are treated as informational, because absence of change cannot be proved there.</p>
+      </div>
+      <div class="good">
+        <h3>Invariants at the type</h3>
+        <p>The mission iteration cap clamps inside the config type, so no call site can forget it. Quiet hours suppress the alert, never the record.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Sequenced by dependency, not by size</p>
+    <h2>What to do, in order</h2>
+    <p class="measure">
+      The phases are ordered because they depend on each other, not because the first is
+      biggest. Phase one is bug fixing and should not wait for any refactor. Phase two creates
+      the layer phase three needs. Nothing here requires rewriting a subsystem.
+    </p>
+
+    <div class="phase">
+      <div class="phase-head">
+        <span class="phase-n">Phase 1</span>
+        <h3>Close the eight defects</h3>
+      </div>
+      <p>
+        Days, not weeks. Each is local, and none needs the refactor. Do them before anything
+        structural, because a refactor on top of a live data-loss path just moves the path.
+      </p>
+      <ul>
+        <li><strong>Re-find by id under the write lock</strong> in the orchestrator's pickup, re-asserting status, and make <code>set_task_status_guarded</code> the only public setter. That one change closes the stale index, the resurrected cancel, and the chat overwrite.</li>
+        <li><strong>Make the periodic entity and mission sync upsert-only</strong> and move deletion to the explicit delete path, matching the policy already written for tasks. Nothing should turn a failed read into a delete.</li>
+        <li><strong>Break the lock inversion:</strong> bind and drop each guard individually in <code>snapshot()</code>, and release the feed write guard before the database round-trip. Two functions.</li>
+        <li><strong>Exempt the beat task kind from restart recovery,</strong> the way the stuck-task watchdog already is, so the mission engine stops dying silently on the third restart.</li>
+        <li><strong>Make reminders skip <code>InProgress</code></strong> and add the missing routing entry, so two loops stop claiming the same row.</li>
+        <li><strong>Re-check beat-due under the write lock</strong> before starting a session, and deregister the process after the child is reaped rather than before.</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <div class="phase-head">
+        <span class="phase-n">Phase 2</span>
+        <h3>Extract the layers that are already implied</h3>
+      </div>
+      <p>
+        Mechanical, reviewable, and the test count should be identical on the far side. This is
+        the step that makes the codebase able to absorb the next six months.
+      </p>
+      <ul>
+        <li><strong>Move the 63 domain types</strong> out of <code>state.rs</code> into <code>domain/</code>, split by domain. Pure moves. Inverts the bad arrow and drops 20 of the 42 circular pairs.</li>
+        <li><strong>Give the stores a shared base:</strong> <code>record_id_key</code> once instead of 13 times, one row-decode helper with one log format, and one place to fix a persistence bug.</li>
+        <li><strong>Split required DDL from advisory</strong> so a failed <code>UNIQUE</code> index aborts startup, and add a migration table before the first field change that is not a plain <code>Option</code>.</li>
+        <li><strong>Halve the build</strong> by deleting the duplicate module list from <code>main.rs</code>. Independent of everything else, and it makes every later step's feedback loop twice as fast &mdash; which is why it is worth doing first within this phase.</li>
+        <li><strong>Consolidate the four mission tallies</strong> into one module, with a test naming each of the three contested choices, and one lifecycle module owning the terminal transitions.</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <div class="phase-head">
+        <span class="phase-n">Phase 3</span>
+        <h3>Then the things that only cost velocity</h3>
+      </div>
+      <p>
+        Deliberately last. These are real, but none of them can lose an approval or freeze the
+        gateway.
+      </p>
+      <ul>
+        <li><strong>Retire the blob for operational state.</strong> Row tables for approvals and entity connections, then shrink the snapshot to singleton configuration.</li>
+        <li><strong>Give the frontend a design system.</strong> Pull the 9,025 lines of route CSS into shared tokens and components, starting with the 4,356-line entity page.</li>
+        <li><strong>Fix the names that mislead.</strong> A module called <code>planner</code> that has nothing to do with planning, next to <code>mission_planner</code> and <code>mission_replanner</code>, reads as a hierarchy that does not exist. Same for the two unrelated modules both called verification.</li>
+        <li><strong>Add a test builder for <code>Task</code> and <code>Mission</code></strong> fixtures, which removes almost all of the measured cross-file duplication.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="end">
+    <p>
+      <b>Method.</b> Measured against the working tree at <code>8bc455ae</code> on branch
+      <code>feat/architect-phase-2</code>. Function lengths by literal-safe brace matching with
+      test modules excluded; circular dependencies by parsing <code>crate::</code> references
+      per module and discarding comment matches; dead code by forcing the lint past the
+      crate-level allow rather than editing the source. All eight defects were confirmed by
+      reading the cited lines, not inferred from structure.
+    </p>
+    <p>
+      <b>Not covered.</b> Test quality was not assessed, only volume &mdash; and the eight
+      defects above suggest the suite does not exercise loop interleaving at all. Runtime
+      performance was not measured. The <code>architect</code> crate runs in shadow mode and
+      was assessed only for its wiring, not its logic.
+    </p>
+  </footer>
+
+</div>

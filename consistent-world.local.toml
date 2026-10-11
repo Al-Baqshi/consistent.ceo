@@ -1,0 +1,71 @@
+[gateway]
+port = 18800
+bind = "127.0.0.1"
+
+[gateway.auth]
+mode = "token"
+
+[agents.defaults]
+model = "operator-default"
+max_concurrent = 4
+
+[[agents.list]]
+id = "ops-coordinator"
+name = "Operations Coordinator"
+model = "operator-default"
+workspace = "."
+max_concurrent = 2
+
+[memory]
+backend = "surreal"
+surreal_url = "ws://127.0.0.1:8000"
+surreal_ns = "consistent-world"
+surreal_db = "main"
+surreal_user = "root"
+surreal_pass = "root"
+vector_search = true
+
+[llm]
+provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[llm.providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[llm.providers.google]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+api_key_env = "GEMINI_API_KEY"
+
+[llm.models.operator-default]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+
+[llm.models.interpreter-default]
+provider = "google"
+model = "gemini-2.5-flash"
+
+[routing.modes.deep]
+temperature = 0.2
+max_tokens = 8192
+
+[routing.modes.fast]
+temperature = 0.2
+max_tokens = 2048
+
+[routing.model_tiers.operator]
+provider = "anthropic"
+model = "operator-default"
+mode = "deep"
+
+[routing.model_tiers.interpreter]
+provider = "google"
+model = "interpreter-default"
+mode = "fast"
+
+[routing.task_kinds.prompt-interpretation]
+generation_tier = "interpreter"
+review_tier = "interpreter"
+fallback_tiers = ["operator"]
+mode = "fast"

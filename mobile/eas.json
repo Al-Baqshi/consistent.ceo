@@ -1,0 +1,31 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      }
+    },
+    "preview": {
+      "distribution": "internal"
+    },
+    "production": {
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6796116344",
+        "ascApiKeyPath": "./AuthKey_3J4W8Y9522.p8",
+        "ascApiKeyId": "3J4W8Y9522",
+        "ascApiKeyIssuerId": "fd5e0565-896c-44eb-939b-392369d7cc54"
+      }
+    }
+  }
+}

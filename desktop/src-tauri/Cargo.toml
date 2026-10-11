@@ -1,0 +1,51 @@
+[package]
+name = "consistent"
+version = "0.1.0"
+description = "Consistent CEO native shell — gateway and workspace UI in one window"
+edition = "2021"
+
+# Isolate from parent workspace so Tauri deps don't mix with main crate graph
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["webview-data-url", "tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+# Start at login (LaunchAgent / Run key / XDG autostart), hidden in the tray.
+# Pinned: 2.6+ requires tauri 2.12, which would upgrade the whole webview stack.
+tauri-plugin-autostart = "~2.5.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+# PKCE for the loopback browser login: a random verifier and its SHA-256.
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+base64 = "0.22"
+dirs = "5"
+# Embedded terminal: a real PTY so `codex login` / `claude` sign-in flows and
+# an interactive shell run inside the app with the user's login-shell PATH.
+portable-pty = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures = "0.3"
+consistent-world-audio = { path = "../../crates/audio" }
+tracing = "0.1"
+# Device key for vault unlock, held in the macOS Keychain / Windows Credential
+# Manager / Linux Secret Service.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Synthetic keyboard events for typing dictated text at the OS cursor.
+# Already in the graph via tauri/cpal, so this adds no extra build.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"
+
+# SendInput for the same typing on Windows. Already in the graph via tauri/tao.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+
+[features]
+default = []

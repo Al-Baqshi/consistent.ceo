@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the generated app Info.plist by Tauri. Covers the app's own
+	     mic use (voice mode) and the on-device dictation sidecar. Without these
+	     keys macOS refuses microphone / speech-recognition access. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Consistent uses your microphone for voice mode and on-device dictation.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Consistent transcribes your speech on-device to type where your cursor is.</string>
+</dict>
+</plist>

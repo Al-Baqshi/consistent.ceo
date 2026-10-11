@@ -1,0 +1,42 @@
+# Cross-platform on-device dictation sidecar built on whisper.cpp (via whisper-rs).
+#
+# This is the Intel / Windows / Linux counterpart to the Apple-Silicon-only
+# `consistent-dictate` (Speech.framework) sidecar: it runs an OpenAI Whisper
+# model entirely on-device — no network, no per-call cost — so dictation works
+# on hardware without Apple's Neural Engine. Same NDJSON wire protocol, so the
+# Tauri shell drives either engine identically.
+#
+# Standalone crate (own [workspace]) so whisper.cpp's build graph never mixes
+# into the gateway workspace; mirrors desktop/src-tauri.
+[package]
+name = "consistent-whisper"
+version = "0.1.0"
+edition = "2021"
+description = "On-device Whisper dictation sidecar (cross-platform)"
+
+[[bin]]
+name = "consistent-whisper"
+path = "src/main.rs"
+
+# Isolate from the parent workspace, exactly like desktop/src-tauri.
+[workspace]
+
+[dependencies]
+# Mic capture (cpal) + streaming resample to 16 kHz (rubato). Reused, not re-derived.
+# Its tokio mpsc receiver is consumed via `blocking_recv`, so this crate needs
+# no tokio runtime of its own.
+consistent-world-audio = { path = "../../crates/audio" }
+# whisper.cpp bindings; builds the C++ via cmake at compile time.
+whisper-rs = "0.14"
+serde_json = "1"
+anyhow = "1"
+# One-time model download from Hugging Face over HTTPS (blocking; spins its own
+# internal runtime, so this stays a plain-threaded binary).
+reqwest = { version = "0.12", features = ["blocking"] }
+dirs = "5"
+# WAV reader for the `--file` self-test path (offline, deterministic).
+hound = "3"
+
+[profile.release]
+# Smaller, faster-to-ship binary; whisper.cpp dominates runtime either way.
+opt-level = 3

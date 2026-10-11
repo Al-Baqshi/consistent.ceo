@@ -1,0 +1,113 @@
+# Consistent CEO — container default config.
+# Most deploy-time values are overridable via env vars at gateway startup:
+#   SURREAL_URL, SURREAL_NS, SURREAL_DB, CONSISTENT_WORLD_PORT, CONSISTENT_WORLD_BIND
+# LLM provider credentials use the same env var names as the [llm.providers.*]
+# blocks below (ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, etc.).
+#
+# Defaults run the database embedded, in the container's volume
+# (~ is /var/lib/consistent-world), so a single `docker run` works. Compose
+# overrides SURREAL_URL / SURREAL_USER / SURREAL_PASS to use its SurrealDB
+# service instead. Ollama runs on the host (host.docker.internal).
+
+[gateway]
+port = 18800
+bind = "0.0.0.0"
+
+[agents.defaults]
+model = "operator-default"
+max_concurrent = 4
+
+[agents.defaults.subagents]
+max_concurrent = 8
+
+[memory]
+backend = "surreal"
+surreal_url = "surrealkv://~/.consistent-world/db"
+surreal_ns = "consistent-world"
+surreal_db = "main"
+vector_search = true
+
+[plugins]
+wasm_sandbox = true
+
+[credentials]
+backend = "env"
+
+[telemetry]
+log_level = "info"
+
+[llm]
+provider = "ollama"
+base_url = "http://host.docker.internal:11434"
+api_key_env = "OLLAMA_API_KEY"
+
+[llm.providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[llm.providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[llm.providers.google]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+api_key_env = "GEMINI_API_KEY"
+
+[llm.providers.ollama]
+base_url = "http://host.docker.internal:11434"
+api_key_env = "OLLAMA_API_KEY"
+
+[llm.models.local-fast-default]
+provider = "ollama"
+model = "gemma4:latest"
+
+[llm.models.operator-default]
+provider = "ollama"
+model = "gemma4:latest"
+
+[llm.models.operator-fallback]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+
+[llm.models.interpreter-default]
+provider = "ollama"
+model = "gemma4:latest"
+
+[llm.models.interpreter-fallback]
+provider = "google"
+model = "gemini-2.5-flash"
+
+[routing.modes.deep]
+temperature = 0.2
+max_tokens = 8192
+
+[routing.modes.fast]
+temperature = 0.2
+max_tokens = 2048
+
+[routing.model_tiers.local-fast]
+provider = "ollama"
+model = "local-fast-default"
+mode = "fast"
+
+[routing.model_tiers.operator]
+provider = "ollama"
+model = "operator-default"
+mode = "deep"
+
+[routing.model_tiers.interpreter]
+provider = "ollama"
+model = "interpreter-default"
+mode = "fast"
+
+[routing.task_kinds.prompt-interpretation]
+generation_tier = "interpreter"
+review_tier     = "interpreter"
+fallback_tiers  = ["operator"]
+mode            = "fast"
+
+[routing.task_kinds.entity-enrichment]
+generation_tier = "operator"
+review_tier     = "operator"
+fallback_tiers  = ["interpreter"]
+mode            = "deep"

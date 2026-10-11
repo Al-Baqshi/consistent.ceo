@@ -1,0 +1,271 @@
+/* ─────────────────────────────────────────
+   GLOBAL DESIGN TOKENS
+   All visual primitives live here.
+   Change once → updates everywhere.
+───────────────────────────────────────── */
+
+/* ── Reset ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  /* ── Color Palette ── */
+  --color-bg-base:         #0a0908;
+  --color-bg-surface:      #0e0c0a;
+  --color-bg-card:         #16130f;
+  --color-bg-card-hover:   #1e1a15;
+  --color-bg-selected:     rgba(201, 138, 75, 0.12);
+  --color-bg-overlay:      rgba(10, 9, 8, 0.78);
+
+  --color-border:          rgba(242, 237, 228, 0.09);
+  --color-border-subtle:   rgba(242, 237, 228, 0.08);
+  --color-border-focus:    rgba(224, 165, 94, 0.42);
+
+  --color-text-primary:    #f2ede4;
+  --color-text-secondary:  #b3aa9b;
+  --color-text-muted:      #7d7568;
+  --color-text-inverse:    #0a0908;
+
+  /* ── Brand / Accent ── */
+  --color-purple:          #4a3d52;
+  --color-purple-dim:      rgba(74, 61, 82, 0.22);
+  --color-purple-border:   rgba(74, 61, 82, 0.48);
+
+  --color-blue:            #eed9ae;
+  --color-blue-dim:        rgba(238, 217, 174, 0.14);
+
+  --color-green:           #7a8163;
+  --color-green-dim:       rgba(122, 129, 99, 0.18);
+  --color-green-running:   #7a8163;
+
+  --color-orange:          #e0a55e;
+  --color-orange-dim:      rgba(224, 165, 94, 0.16);
+
+  --color-red:             #c96a4b;
+  --color-red-dim:         rgba(201, 106, 75, 0.16);
+  --color-red-text:        #c96a4b;
+
+  --color-cyan:            #c98a4b;
+  --color-cyan-dim:        rgba(201, 138, 75, 0.14);
+
+  --color-pink:            #eed9ae;
+
+  /* ── Semantic aliases (use these in components) ── */
+  --bg-primary:       var(--color-bg-base);
+  --bg-secondary:     var(--color-bg-surface);
+  --bg-card:          var(--color-bg-card);
+  --bg-card-hover:    var(--color-bg-card-hover);
+  --bg-selected:      var(--color-bg-selected);
+
+  --border:           var(--color-border);
+  --border-subtle:    var(--color-border-subtle);
+  --border-focus:     var(--color-border-focus);
+
+  --text-primary:     var(--color-text-primary);
+  --text-secondary:   var(--color-text-secondary);
+  --text-muted:       var(--color-text-muted);
+
+  --accent-purple:    var(--color-purple);
+  --accent-blue:      var(--color-blue);
+  --accent-green:     var(--color-green);
+  --accent-orange:    var(--color-orange);
+  --accent-red:       var(--color-red);
+  --accent-cyan:      var(--color-cyan);
+  --accent-pink:      var(--color-pink);
+  --running-green:    var(--color-green-running);
+
+  --gradient-primary-button: linear-gradient(180deg, #c98a4b, #8a5a2e);
+  --gradient-text: linear-gradient(90deg, #f2ede4, #e0a55e, #c98a4b);
+  --gradient-core-glow: radial-gradient(circle, rgba(238, 217, 174, 0.9), rgba(224, 165, 94, 0.58), rgba(138, 90, 46, 0.24), transparent 68%);
+  --gradient-thread: linear-gradient(90deg, transparent, #c98a4b, #e0a55e, #c98a4b, transparent);
+
+  /* ── Typography ── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  --text-2xs:  10px;
+  --text-xs:   11px;
+  --text-sm:   12px;
+  --text-base: 13px;
+  --text-md:   14px;
+  --text-lg:   16px;
+  --text-xl:   18px;
+  --text-2xl:  22px;
+
+  --font-normal:   400;
+  --font-medium:   500;
+  --font-semibold: 600;
+  --font-bold:     700;
+
+  --leading-tight:  1.25;
+  --leading-normal: 1.5;
+  --leading-loose:  1.75;
+
+  /* ── Spacing ── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ── Border Radius ── */
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:   12px;
+  --radius-2xl:  16px;
+  --radius-full: 9999px;
+
+  /* ── Shadows ── */
+  --shadow-sm:   0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md:   0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg:   0 12px 32px rgba(0, 0, 0, 0.6);
+  --shadow-xl:   0 24px 60px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(224, 165, 94, 0.18);
+  --shadow-glow: 0 0 16px rgba(201, 138, 75, 0.28);
+
+  /* ── Transitions ── */
+  --duration-fast:   100ms;
+  --duration-base:   150ms;
+  --duration-slow:   250ms;
+  --ease-default:    ease;
+  --ease-out:        cubic-bezier(0.16, 1, 0.3, 1);
+
+  --transition-base: var(--duration-base) var(--ease-default);
+  --transition-slow: var(--duration-slow) var(--ease-out);
+
+  /* ── Z-Index Scale ── */
+  --z-base:    0;
+  --z-raised:  10;
+  --z-dropdown:100;
+  --z-sticky:  200;
+  --z-overlay: 300;
+  --z-modal:   400;
+  --z-toast:   500;
+
+  /* ── Component Tokens ── */
+  --topbar-height: 56px;
+  --sidebar-width: 64px;
+  --sidebar-width-collapsed: 48px;
+
+  --chat-user-bg:      linear-gradient(180deg, #c98a4b, #8a5a2e);
+  --chat-user-text:    #ffffff;
+  --chat-assistant-bg: rgba(22, 19, 15, 0.9);
+  --chat-assistant-border: rgba(242, 237, 228, 0.09);
+
+  /* Translucent surfaces that flip with theme. */
+  --surface-overlay:        rgba(242, 237, 228, 0.06);
+  --surface-overlay-strong: rgba(22, 19, 15, 0.85);
+  --surface-overlay-hover:  rgba(201, 138, 75, 0.12);
+  --surface-sunken:         rgba(12, 10, 8, 0.92);
+  --surface-hover:          rgba(242, 237, 228, 0.06);
+  --surface-accent-soft:    rgba(201, 138, 75, 0.12);
+  --panel-gradient:         linear-gradient(180deg, rgba(22, 19, 15, 0.85), rgba(12, 10, 8, 0.92));
+  --stack-card-bg:          rgba(22, 19, 15, 0.72);
+  --heading-contrast:       #f2ede4;
+
+  --card-padding:  var(--space-3);
+  --page-padding:  var(--space-4) var(--space-5);
+
+  --btn-height-sm: 26px;
+  --btn-height-md: 32px;
+  --btn-height-lg: 38px;
+
+  --input-height:  34px;
+  --input-radius:  var(--radius-md);
+
+  --tag-height:    20px;
+  --tag-radius:    var(--radius-sm);
+
+  --dot-size:      7px;
+  --avatar-sm:     28px;
+  --avatar-md:     36px;
+}
+
+/* ── Light theme (data-theme="light" on <html>) ── */
+[data-theme="light"] {
+  --color-bg-base:         #f2ede4;
+  --color-bg-surface:      #fffaf1;
+  --color-bg-card:         #fff7ea;
+  --color-bg-card-hover:   #f4ead8;
+  --color-bg-selected:     rgba(201, 138, 75, 0.14);
+  --color-bg-overlay:      rgba(10, 9, 8, 0.5);
+
+  --color-border:          rgba(74, 61, 82, 0.16);
+  --color-border-subtle:   rgba(74, 61, 82, 0.1);
+  --color-border-focus:    rgba(138, 90, 46, 0.42);
+
+  --color-text-primary:    #0a0908;
+  --color-text-secondary:  #4f463b;
+  --color-text-muted:      #7d7568;
+  --color-text-inverse:    #ffffff;
+
+  /* Chat + surface tokens override for light theme. */
+  --chat-user-bg:           linear-gradient(180deg, #c98a4b, #8a5a2e);
+  --chat-user-text:         #ffffff;
+  --chat-assistant-bg:      #fffaf1;
+  --chat-assistant-border:  rgba(74, 61, 82, 0.14);
+
+  --surface-overlay:        rgba(255, 250, 241, 0.9);
+  --surface-overlay-strong: rgba(255, 250, 241, 0.98);
+  --surface-overlay-hover:  rgba(244, 234, 216, 0.95);
+  --surface-sunken:         rgba(238, 217, 174, 0.26);
+  --surface-hover:          rgba(201, 138, 75, 0.08);
+  --surface-accent-soft:    rgba(201, 138, 75, 0.1);
+  --panel-gradient:         linear-gradient(180deg, #fffaf1, #f2ede4);
+  --stack-card-bg:          #fffaf1;
+  --heading-contrast:       var(--text-primary);
+}
+
+/* ─────────────────────────────────────────
+   BASE STYLES
+───────────────────────────────────────── */
+body {
+  background:
+    radial-gradient(900px 420px at 50% -20%, rgba(201, 138, 75, 0.12), transparent 68%),
+    radial-gradient(720px 360px at 100% 0%, rgba(238, 217, 174, 0.08), transparent 62%),
+    var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+
+/* ─────────────────────────────────────────
+   SCROLLBAR
+───────────────────────────────────────── */
+::-webkit-scrollbar         { width: 5px; height: 5px; }
+::-webkit-scrollbar-track   { background: transparent; }
+::-webkit-scrollbar-thumb   { background: var(--border); border-radius: var(--radius-full); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ─────────────────────────────────────────
+   UTILITY CLASSES
+   (opt-in helpers, keep minimal)
+───────────────────────────────────────── */
+.text-xs       { font-size: var(--text-xs); }
+.text-sm       { font-size: var(--text-sm); }
+.text-muted    { color: var(--text-muted); }
+.text-secondary{ color: var(--text-secondary); }
+.font-semibold { font-weight: var(--font-semibold); }
+.font-bold     { font-weight: var(--font-bold); }
+.truncate      { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

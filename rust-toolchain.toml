@@ -1,0 +1,16 @@
+# Pinned, not "stable", on purpose.
+#
+# CI used to resolve `stable` at run time while this machine ran whatever
+# Homebrew had installed. On 9 Sep 2026 those were 1.98 and 1.97: two lints
+# added in 1.98 fired only in CI, so `cargo clippy` was green locally and red on
+# every push, and `main` stayed red from July without anyone seeing a failure.
+#
+# A pinned version means the compiler that judges a change is the same one
+# everywhere, and a new lint arrives when someone bumps this line deliberately
+# rather than the morning Rust ships a release.
+#
+# To bump: raise the version here and in .github/workflows/ci.yml (four
+# `toolchain:` keys), then run `scripts/repo-health.sh --full` and fix whatever
+# the newer clippy finds — in that order, so the lints land in their own commit.
+[toolchain]
+channel = "1.97"

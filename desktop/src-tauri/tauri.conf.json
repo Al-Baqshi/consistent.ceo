@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/v2/tauri.config.json",
+  "productName": "Consistent CEO",
+  "version": "0.1.0",
+  "identifier": "world.consistent.desktop",
+  "build": {
+    "beforeDevCommand": "npm run serve:loader",
+    "devUrl": "http://127.0.0.1:18999",
+    "beforeBuildCommand": "node scripts/copy-sidecar.js && node scripts/build-dictation.js && node scripts/build-whisper.js",
+    "frontendDist": "../noop"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self' http://localhost:18800; connect-src 'self' http://localhost:18800 ws://localhost:18800 ipc: http://ipc.localhost; img-src 'self' http://localhost:18800 data: blob:; media-src 'self' http://localhost:18800 data: blob:; style-src 'self' http://localhost:18800 'unsafe-inline'; script-src 'self' http://localhost:18800; font-src 'self' http://localhost:18800 data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/consistent-world",
+      "binaries/consistent-whisper"
+    ],
+    "resources": [],
+    "copyright": "\u00a9 2026 Moe Baqshi",
+    "category": "Productivity",
+    "shortDescription": "Consistent CEO \u2014 self-hosted AI agent platform",
+    "longDescription": "Consistent CEO runs the gateway and workspace UI in one native window. One download, plug and play.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "entitlements": "entitlements.plist",
+      "hardenedRuntime": true
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "android": {}
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

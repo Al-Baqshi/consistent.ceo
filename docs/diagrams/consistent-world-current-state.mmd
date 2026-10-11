@@ -1,0 +1,130 @@
+%% Mirimai ID: consistent-world-current
+%% Slot: entity.flowDiagrams.current
+%% Era: post Build 2 sealed · 2026-05-24 · branch feat/three-pillars-foundation
+%% Open this file in Cursor to preview. Synced to Consistent World self-entity seed.
+
+flowchart TB
+  %% ===== External world =====
+  subgraph EXT[External]
+    UI[SvelteKit chat UI]
+    CHAN[Channel adapters]
+    LLM[(LLM providers<br/>OpenAI · Anthropic · Ollama)]
+    KEYR[(Keyring + env)]
+  end
+
+  %% ===== Gateway =====
+  subgraph GW[consistent-world-gateway · Rust]
+    direction TB
+
+    subgraph HTTP[HTTP API · server.rs]
+      H_CHAT[POST /api/chat]
+      H_ENT[GET·POST /api/entities]
+      H_HB[GET·POST /api/heartbeats]
+      H_HBR[GET /api/entities/:id/heartbeat-results]
+      H_SET[POST settings credentials]
+    end
+
+    subgraph LOOPS[Long-lived loops]
+      ROUTER[router.rs<br/>message routing]
+      ORCH[orchestrator.rs<br/>task pickup + assignment]
+      TICK[heartbeat_store::HeartbeatTicker<br/>polls every 30s]
+    end
+
+    subgraph CHATP[Chat-turn pipeline]
+      AGENT[chat_agent::run_chat_turn]
+      BUILD[build_initial_messages<br/>+ build_canonical_block]
+      ASM[prompt_assembly::assemble_system_prompt<br/>SOUL → director → entity → mission → lessons]
+    end
+
+    subgraph HBP[Heartbeat pipeline]
+      DUE[list_due]
+      HBD[heartbeat_dispatcher<br/>ChatHeartbeatDispatcher]
+      RUNDIR[director_runner::run_director]
+      CANNED[build_canned_summary<br/>fallback]
+    end
+
+    CRED[credentials_resolver<br/>resolve_llm_api_key<br/>re-reads per turn]
+    COST[cost ledger<br/>debit_cost_if_needed]
+    CTRL[ControlState<br/>entities · tasks · missions · approvals · directors]
+    SNAP[(control_state.json snapshot)]
+  end
+
+  %% ===== Stores =====
+  subgraph DB[SurrealDB · SQLite fallback for memories]
+    T_ENT[(entities · colour)]
+    T_MIS[(missions · narrative · canonical_notes)]
+    T_DIR[(directors · seeded from agents_seed.json)]
+    T_LES[(director_lessons · HNSW 1536d cosine)]
+    T_HB[(heartbeats)]
+    T_HBR[(heartbeat_results)]
+    T_MEM[(memories · HNSW)]
+  end
+
+  %% ===== Chat flow =====
+  UI -->|chat msg| H_CHAT --> AGENT
+  CHAN --> ROUTER --> AGENT
+  AGENT --> BUILD --> ASM
+  ASM -.reads.-> T_DIR
+  ASM -.reads.-> T_ENT
+  ASM -.reads.-> T_MIS
+  ASM -.reads.-> T_LES
+  ASM -->|system block| AGENT
+  AGENT --> CRED
+  CRED <-.per turn.-> KEYR
+  AGENT -->|CompletionRequest| LLM
+  LLM -->|reply + usage| AGENT
+  AGENT --> COST
+  AGENT -->|persist turn| T_MEM
+
+  %% ===== Heartbeat flow =====
+  TICK --> DUE --> T_HB
+  DUE -->|due rows| HBD
+  HBD --> RUNDIR --> CRED
+  RUNDIR -->|CompletionRequest| LLM
+  LLM -->|Ok text + usage| RUNDIR
+  RUNDIR -->|Ok| HBD
+  RUNDIR -->|Err| CANNED --> HBD
+  HBD --> T_HBR
+  HBD -->|debit| COST
+  UI -.poll 30s.-> H_HBR --> T_HBR
+
+  %% ===== Admin flows =====
+  H_HB --> T_HB
+  H_ENT --> T_ENT
+  H_SET -->|probe → store| KEYR
+
+  %% ===== State =====
+  ORCH --> CTRL
+  CTRL <-.snapshot.-> SNAP
+
+  %% ===== Styling =====
+  classDef store fill:#1f2937,stroke:#94a3b8,color:#f8fafc
+  classDef ext fill:#0f172a,stroke:#64748b,color:#e2e8f0
+  classDef pipe fill:#312e81,stroke:#a78bfa,color:#ede9fe
+  classDef http fill:#155e75,stroke:#22d3ee,color:#ecfeff
+  classDef loop fill:#365314,stroke:#a3e635,color:#ecfccb
+  classDef warn fill:#7c2d12,stroke:#fb923c,color:#ffedd5
+
+  class T_ENT,T_MIS,T_DIR,T_LES,T_HB,T_HBR,T_MEM,SNAP store
+  class UI,CHAN,LLM,KEYR ext
+  class AGENT,BUILD,ASM,RUNDIR,HBD,DUE pipe
+  class CANNED warn
+  class H_CHAT,H_ENT,H_HB,H_HBR,H_SET http
+  class ROUTER,ORCH,TICK loop
+
+  %% ===== Voice-to-face faces (MetaHuman pipeline) =====
+  subgraph FACES[Voice-to-face · MetaHuman pipeline]
+    direction LR
+    F1["Face 1 Voice Loop<br/>✅ built<br/>gemini_live · voice.rs · sveltfront/voice"]
+    F2["Face 2 A2F Bridge<br/>⚠ scaffold only<br/>crates/a2f · not wired"]
+    F3["Face 3 Visual<br/>❌ not built<br/>ConsistentWorldFace.svelte stub · no UE5"]
+    F4["Face 4 OS Handoff<br/>❌ not wired<br/>handoff.rs · not in voice path"]
+    F1 --> F2 --> F3 --> F4
+  end
+
+  class F1 built
+  class F2 warn
+  class F3,F4 missing
+
+  classDef built fill:#14532d,stroke:#4ade80,color:#ecfccb
+  classDef missing fill:#450a0a,stroke:#f87171,color:#fee2e2

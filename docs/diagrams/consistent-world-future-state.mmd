@@ -1,0 +1,74 @@
+%% Mirimai ID: consistent-world-future
+%% Slot: entity.flowDiagrams.future
+%% Concept: 2050 bulletproof architect — Consistent World as harness, Entity as truth, AI never free-wheels
+
+flowchart TB
+  %% ── People ──────────────────────────────────────────────
+  USER([Human operator])
+  NEW([New user · no entity yet])
+
+  %% ── One surface ─────────────────────────────────────────
+  CHAT[Chat surface<br/>text · voice · optional face]
+
+  %% ── Consistent World = harness, not the brain ───────────────────
+  subgraph HARNESS[Consistent World harness]
+    direction TB
+    CTX[Bind session → entity]
+    AUD[Audit trail · every turn logged]
+    GATE[Policy gate<br/>approvals · execution limits]
+  end
+
+  %% ── The architect: inspect before it invents ────────────
+  subgraph ARCH[Bulletproof Architect]
+    direction TB
+    I["① Inspect<br/>Read entity state · resources · history"]
+    F["② Look forward<br/>Goals + gaps → next plausible states"]
+    G["③ Generate<br/>Draft only from inspected facts"]
+    V["④ Verify<br/>Each claim must cite entity or source"]
+    I --> F --> G --> V
+  end
+
+  PASS[Grounded result]
+  ASK[Ask · clarify · or refuse<br/>never guess silently]
+
+  %% ── Entity = canonical truth ────────────────────────────
+  ENT[(Entity<br/>profile · goals · context<br/>Mirimai ID · connections · lessons)]
+
+  %% ── Natural onboarding for new users ──────────────────
+  COND[Entity Conductor<br/>natural chat → entity born]
+
+  %% ── Outcomes loop back into truth ───────────────────────
+  WORK[Missions · tasks · artifacts]
+  LEARN[Lessons captured<br/>directors teach directors]
+
+  %% ── Flows ───────────────────────────────────────────────
+  USER --> CHAT
+  NEW --> CHAT
+  CHAT --> CTX --> I
+  I <-->|read only first| ENT
+  V -->|grounded| PASS
+  V -->|ungrounded| ASK
+  PASS --> GATE --> CHAT
+  ASK --> CHAT
+  PASS --> WORK --> LEARN --> ENT
+
+  NEW -.first visit.-> COND
+  COND --> ENT
+  COND --> CHAT
+
+  AUD -.records.-> I & G & V & PASS & ASK
+
+  %% ── Visual legend ───────────────────────────────────────
+  classDef human fill:#0c4a6e,stroke:#38bdf8,color:#e0f2fe
+  classDef harness fill:#1e3a5f,stroke:#64748b,color:#e2e8f0
+  classDef architect fill:#312e81,stroke:#a78bfa,color:#ede9fe
+  classDef truth fill:#14532d,stroke:#4ade80,color:#ecfccb
+  classDef safe fill:#166534,stroke:#86efac,color:#dcfce7
+  classDef stop fill:#7c2d12,stroke:#fb923c,color:#ffedd5
+
+  class USER,NEW human
+  class HARNESS,CTX,AUD,GATE harness
+  class ARCH,I,F,G,V architect
+  class ENT,LEARN truth
+  class PASS safe
+  class ASK stop

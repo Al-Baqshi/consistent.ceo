@@ -1,0 +1,19 @@
+{
+  "name": "consistent",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:signed": "bash scripts/build-signed.sh",
+    "build:sidecar": "node scripts/copy-sidecar.js",
+    "build:dictation": "node scripts/build-dictation.js",
+    "build:whisper": "node scripts/build-whisper.js",
+    "serve:loader": "node scripts/serve-loader.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package consistent_world.a2f.v1;
+
+// Placeholder Audio2Face-compatible streaming service.
+//
+// This mirrors the public shape of NVIDIA Audio2Face-3D (A2F) ACE NIM's
+// bidirectional streaming API — client streams PCM16 audio chunks, server
+// streams blendshape weight frames. The real `.proto` is distributed to
+// NVIDIA Inception partners and should replace this file once available.
+
+service AudioToFace {
+  // Bidirectional stream. Client opens with a `session_start`, then streams
+  // `audio_chunk` messages. Server replies with `blendshape_frame` messages.
+  rpc Stream(stream ClientMessage) returns (stream ServerMessage);
+}
+
+message ClientMessage {
+  oneof payload {
+    SessionStart session_start = 1;
+    AudioChunk audio_chunk = 2;
+    SessionEnd session_end = 3;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    SessionReady session_ready = 1;
+    BlendshapeFrame blendshape_frame = 2;
+    SessionStatus status = 3;
+  }
+}
+
+message SessionStart {
+  string session_id = 1;
+  uint32 sample_rate = 2;   // expected 16000 or 24000
+  string voice_actor = 3;   // A2F's facial-style preset, e.g. "mark", "claire"
+  float emotion_neutral = 4;
+  float emotion_joy = 5;
+  float emotion_sadness = 6;
+  float emotion_anger = 7;
+}
+
+message AudioChunk {
+  bytes pcm16_le = 1;       // mono little-endian PCM16 samples
+  uint64 pts_ms = 2;        // presentation timestamp for jitter alignment
+}
+
+message BlendshapeFrame {
+  uint64 pts_ms = 1;
+  // 52 ARKit-compatible blendshape weights, 0.0 - 1.0.
+  repeated float weights = 2;
+  // Parallel names array (optional; helpful in early integration).
+  repeated string names = 3;
+}
+
+message SessionReady {
+  string session_id = 1;
+  uint32 frame_rate_hz = 2;   // expected ~30 or 60
+}
+
+message SessionEnd {
+  string reason = 1;
+}
+
+message SessionStatus {
+  string code = 1;
+  string message = 2;
+}

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Hardened Runtime entitlements. Notarization requires the hardened runtime,
+	  which by default blocks the things this app legitimately needs.
+
+	  Deliberately absent: com.apple.security.app-sandbox. The app spawns the
+	  operator's own `claude` and `codex` CLIs and reads real project folders by
+	  absolute path; App Sandbox permits neither, which is also why the Mac App
+	  Store is not a distribution route for this app.
+	-->
+
+	<!-- The gateway sidecar, whisper and the dictation helper are separate
+	     binaries launched from the bundle; JIT-less but dynamically linked
+	     against libraries the notary service checks against our own signature. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- Voice mode and on-device dictation. Paired with
+	     NSMicrophoneUsageDescription / NSSpeechRecognitionUsageDescription. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- The gateway listens on 127.0.0.1 and reaches out to model providers. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

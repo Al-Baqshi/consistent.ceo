@@ -1,0 +1,2 @@
+# Copied by build.rs when building with --features dashboard; do not commit
+dashboard_build/

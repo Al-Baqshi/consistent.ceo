@@ -1,0 +1,96 @@
+[package]
+name = "consistent-world-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "consistent-world"
+
+[features]
+default = []
+dashboard = ["dep:include_dir", "dep:mime_guess"]
+
+[lib]
+name = "consistent_world_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "consistent-world"
+path = "src/main.rs"
+
+[dependencies]
+consistent-world-agents = { path = "../agents" }
+consistent-world-llm = { path = "../llm" }
+consistent-world-memory = { path = "../memory" }
+consistent-world-tools = { path = "../tools" }
+consistent-world-plugins = { path = "../plugins" }
+consistent-world-credentials = { path = "../credentials" }
+consistent-world-common = { path = "../common" }
+consistent-world-audio = { path = "../audio" }
+consistent-world-architect = { path = "../architect" }
+consistent-world-relay = { path = "../relay" }
+tokio-tungstenite.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+chrono.workspace = true
+toml.workspace = true
+uuid.workspace = true
+futures.workspace = true
+tokio-stream = { workspace = true }
+bytes = "1"
+cron.workspace = true
+surrealdb.workspace = true
+async-trait.workspace = true
+dialoguer = "0.11"
+console = "0.15"
+# Pairing QR: unicode for `consistent-world pair`, SVG for the dashboard. The
+# svg renderer has no dependencies; the image feature stays off.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+dotenvy = "0.15"
+dashmap.workspace = true
+# Vault unlock keys (WebAuthn PRF output, device keys) cross the wire as base64.
+base64.workspace = true
+argon2.workspace = true
+# Home directory, for the default local-file roots (~/Desktop, ~/Consistent).
+dirs = "5"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+# Constant-time comparison for the short, guessable secrets (login-approval codes).
+subtle = "2"
+# Ed25519 verification for paired-device keys (pairing.rs). Already in the
+# graph through jsonwebtoken, so this adds no build.
+ring = "0.17"
+# Trusted-proxy allowlist for X-Forwarded-For.
+ipnet = "2"
+# Optional external-identity seam: EdDSA JWTs verified against an issuer's JWKS.
+jsonwebtoken = "9"
+webauthn-rs = "0.5"
+include_dir = { version = "0.7", optional = true }
+mime_guess = { version = "2", optional = true }
+
+# webauthn-rs pulls in openssl, which has no system copy on windows-msvc — the
+# reason the Windows desktop build was deferred. Vendoring it (build from
+# source; needs perl + nasm, both present on GitHub's windows runners) makes
+# the gateway sidecar compile there. No effect on macOS/Linux builds.
+[target.'cfg(windows)'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
+[dev-dependencies]
+# Real Ed25519 keypairs, so the external-identity tests sign and verify actual
+# tokens rather than asserting against fixtures. Already in the graph via
+# jsonwebtoken, so this adds no build.
+ring = "0.17"
+consistent-world-memory = { path = "../memory" }
+consistent-world-common = { path = "../common" }
+tower = { workspace = true }
+tempfile = { workspace = true }
+hyper = { workspace = true }
+http-body-util = "0.1"
+async-trait.workspace = true

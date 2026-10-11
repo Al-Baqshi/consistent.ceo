@@ -1,0 +1,77 @@
+# Rust / Cargo
+/target/
+**/target/
+
+# Node / frontend (anywhere in repo)
+node_modules/
+**/node_modules/
+
+# SvelteKit / Vite build output
+.svelte-kit/
+**/.svelte-kit/
+build/
+**/build/
+dist/
+**/dist/
+.vite/
+**/.vite/
+
+# Frontend coverage / caches
+coverage/
+**/coverage/
+.npm/
+.pnpm-store/
+
+# Expo / React Native mobile app (mobile/)
+/mobile/.expo/
+**/.expo/
+/mobile/ios/
+/mobile/android/
+/mobile/expo-env.d.ts
+*.tsbuildinfo
+.metro-health-check*
+
+# Gateway embedded dashboard copy (build.rs output)
+/crates/gateway/dashboard_build/
+
+# Local model files (Ollama, GGUF, etc.) — large, re-downloadable
+/models/
+
+# Tauri sidecar binaries (rebuilt via desktop/scripts/copy-sidecar.js)
+/desktop/src-tauri/binaries/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*.bak
+
+.fake
+
+# iOS local xcconfig (committed template lives at ConsistentWorld.xcconfig.template)
+ios/ConsistentWorld/Config/ConsistentWorld.xcconfig
+**/xcuserdata/
+*.xcuserstate
+
+# Marketing site lives in its own repo (github.com/Al-Baqshi/Consistent,
+# deployed on Vercel) — checked out here for convenience, not part of this app.
+landing-page/
+/Consistent/
+verify_gate.log
+
+# Personal tooling that must not ship: third-party agent skills and editor colours.
+.agents/
+skills-lock.json
+.claude/skills/higgsfield-*
+.vscode/

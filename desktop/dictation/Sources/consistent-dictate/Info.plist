@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>world.consistent.dictate</string>
+	<key>CFBundleName</key>
+	<string>consistent-dictate</string>
+	<key>CFBundleExecutable</key>
+	<string>consistent-dictate</string>
+	<!-- TCC reads these from the __TEXT,__info_plist section of the flat binary.
+	     Without them the OS SIGABRTs the process on first mic/speech access. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Consistent uses your microphone for on-device dictation.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Consistent transcribes your speech on-device to type where your cursor is.</string>
+</dict>
+</plist>

@@ -1,0 +1,32 @@
+[package]
+name = "consistent-world-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thin rendezvous relay: reach a loopback-bound Consistent gateway from anywhere."
+
+[[bin]]
+name = "consistent-relay"
+path = "src/main.rs"
+
+[lib]
+name = "consistent_world_relay"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+futures.workspace = true
+uuid.workspace = true
+base64.workspace = true
+async-stream = "0.3"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["stream"] }
+tokio-tungstenite = { workspace = true }

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<script>
+			(function(){
+				try {
+					var t = localStorage.getItem('consistent-world-theme');
+					if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+				} catch (_) {}
+			})();
+		</script>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#0a0908" />
+
+		<!-- Static shell metadata: the site-level fallbacks that must survive without
+		     JavaScript, since this app is an SPA (`ssr = false`) and a link unfurler
+		     never executes the code that would emit `svelte:head`.
+		     `<title>`, `description`, and `canonical` are deliberately NOT here — they
+		     are per-route, emitted by `$lib/components/Seo.svelte`. Hardcoding them in
+		     the shell would duplicate them on `/about`, the one prerendered route,
+		     where the page's own tags do land in the static HTML. -->
+
+		<link rel="icon" href="/logo-consistent-ceo.png" type="image/png" />
+		<link rel="apple-touch-icon" href="/logo-consistent-ceo.png" />
+
+		<meta property="og:type" content="website" />
+		<meta property="og:site_name" content="Consistent CEO" />
+		<meta property="og:url" content="https://consistent.ceo/" />
+		<meta property="og:title" content="Consistent CEO — the local-first operating system for missions and entities" />
+		<meta
+			property="og:description"
+			content="Your businesses, projects, goals, approvals, and memories as a persistent, evidence-backed operating graph — with AI pushing the work forward under explicit human oversight."
+		/>
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content="Consistent CEO" />
+		<meta
+			name="twitter:description"
+			content="The local-first operating system for missions and entities. Rust, self-hosted, open source."
+		/>
+
+		<script type="application/ld+json">
+			{
+				"@context": "https://schema.org",
+				"@type": "SoftwareApplication",
+				"name": "Consistent CEO",
+				"alternateName": "Consistent",
+				"url": "https://consistent.ceo/",
+				"applicationCategory": "BusinessApplication",
+				"operatingSystem": "macOS, Linux, Windows, iOS, Android",
+				"description": "Local-first operating system for missions and entities. Businesses, projects, goals, approvals, and memories live as a persistent, evidence-backed operating graph, with AI advancing the work under explicit human oversight.",
+				"isAccessibleForFree": true,
+				"offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+				"publisher": {
+					"@type": "Organization",
+					"name": "Consistent CEO",
+					"url": "https://consistent.ceo/"
+				}
+			}
+		</script>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

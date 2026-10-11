@@ -1,0 +1,29 @@
+# systemd unit for ConsistentWorld (Linux servers).
+# Install:
+#   sudo cp consistent_world.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable consistent-world
+#   sudo systemctl start consistent-world
+#
+# Config: create /etc/consistent-world/consistent_world.toml (or set CONSISTENT_WORLD_CONFIG).
+# Override ExecStart with: sudo systemctl edit consistent-world
+
+[Unit]
+Description=ConsistentWorld AI agent gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/consistent-world --config /etc/consistent-world/consistent_world.toml
+Restart=on-failure
+RestartSec=5
+# Optional: run as dedicated user
+# User=consistent-world
+# Group=consistent-world
+# Optional: env and paths
+# Environment=CONSISTENT_WORLD_CONFIG=/etc/consistent-world/consistent_world.toml
+# WorkingDirectory=/var/lib/consistent-world
+
+[Install]
+WantedBy=multi-user.target

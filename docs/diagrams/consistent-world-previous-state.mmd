@@ -1,0 +1,46 @@
+%% Mirimai ID: consistent-world-previous
+%% Slot: entity.flowDiagrams.previous
+%% Era: pre Build 2 (before 2026-05-24) — three-pillars not yet landed
+
+flowchart TB
+  subgraph EXT[External]
+    UI[SvelteKit chat UI]
+    LLM[(Single LLM provider<br/>env key only)]
+  end
+
+  subgraph GW[consistent-world-gateway · Rust]
+    H_CHAT[POST /api/chat]
+    AGENT[chat_agent<br/>basic system prompt]
+    CTRL[ControlState<br/>entities from JSON seed]
+    SNAP[(control_state.json)]
+    CANNED[build_canned_summary<br/>heartbeat placeholder]
+  end
+
+  subgraph DB[Persistence]
+    MEM[(memories · SQLite or Surreal)]
+    JSON[(entities in JSON snapshot only)]
+  end
+
+  UI --> H_CHAT --> AGENT --> LLM
+  AGENT --> MEM
+  AGENT --> CTRL
+  CTRL <-.snapshot.-> SNAP
+  CTRL -.reads.-> JSON
+
+  TICK[Heartbeat ticker stub] --> CANNED
+  CANNED -.no real director LLM.-> UI
+
+  subgraph FACES[Voice-to-face pipeline · not started]
+    F1[Face 1 Voice · partial]
+    F2[Face 2 A2F · none]
+    F3[Face 3 Visual · none]
+    F4[Face 4 OS handoff · none]
+  end
+
+  classDef ext fill:#0f172a,stroke:#64748b,color:#e2e8f0
+  classDef warn fill:#7c2d12,stroke:#fb923c,color:#ffedd5
+  classDef store fill:#1f2937,stroke:#94a3b8,color:#f8fafc
+
+  class UI,LLM ext
+  class CANNED,F2,F3,F4 warn
+  class MEM,JSON,SNAP store

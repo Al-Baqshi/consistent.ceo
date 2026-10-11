@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Consistent World</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: radial-gradient(circle at 50% 20%, rgba(201, 138, 75, 0.18), transparent 36%), #0a0908; color: #f2ede4; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .box { text-align: center; padding: 2rem; }
+    h1 { color: #e0a55e; }
+    .spinner { width: 32px; height: 32px; border: 3px solid rgba(242, 237, 228, 0.09); border-top-color: #c98a4b; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 1rem auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .err { color: #c96a4b; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1>Consistent World</h1>
+    <p id="msg">Starting gateway…</p>
+  </div>
+  <script>
+    // App already waited for /health in setup; short delay then redirect to gateway.
+    var gateway = 'http://127.0.0.1:18800';
+    setTimeout(function() { window.location.href = gateway; }, 800);
+  </script>
+</body>
+</html>
