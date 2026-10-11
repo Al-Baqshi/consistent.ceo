@@ -17,16 +17,34 @@
 #      or an App Store Connect API key via APPLE_API_KEY/APPLE_API_ISSUER.
 #
 # Usage:  desktop/scripts/release-macos.sh [--skip-notarize]
+#
+# Cross-build the other Mac architecture with CONSISTENT_TARGET, e.g. on an
+# Intel Mac:  CONSISTENT_TARGET=aarch64-apple-darwin desktop/scripts/release-macos.sh
+# (needs `rustup target add aarch64-apple-darwin`).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESKTOP="$REPO_ROOT/desktop"
-BUNDLE_DIR="$DESKTOP/src-tauri/target/release/bundle"
+HOST_TRIPLE="$(rustc --print host-tuple)"
+TARGET_TRIPLE="${CONSISTENT_TARGET:-$HOST_TRIPLE}"
+if [[ "$TARGET_TRIPLE" == "$HOST_TRIPLE" ]]; then
+  BUNDLE_DIR="$DESKTOP/src-tauri/target/release/bundle"
+  TAURI_TARGET_ARGS=()
+else
+  BUNDLE_DIR="$DESKTOP/src-tauri/target/$TARGET_TRIPLE/release/bundle"
+  TAURI_TARGET_ARGS=(-- --target "$TARGET_TRIPLE")
+fi
+case "$TARGET_TRIPLE" in
+  aarch64-apple-darwin) ASSET_NAME="Consistent-CEO-macOS-AppleSilicon.dmg" ;;
+  *)                    ASSET_NAME="Consistent-CEO-macOS-Intel.dmg" ;;
+esac
 APP="$BUNDLE_DIR/macos/Consistent CEO.app"
 NOTARY_PROFILE="${NOTARY_PROFILE:-consistent-notary}"
-# Where the landing site expects the installer. Stable name on purpose: the
-# download URL must not change per release.
-SITE_ASSET="${SITE_ASSET:-$HOME/consistent/Consistent/public/downloads/Consistent-CEO-macOS-Intel.dmg}"
+# Where the finished installer is staged, under the stable name the website
+# and README link to (releases/latest/download/<name>). Upload it to the
+# GitHub release for the tag.
+OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist}"
+SITE_ASSET="$OUT_DIR/$ASSET_NAME"
 
 skip_notarize=false
 [[ "${1:-}" == "--skip-notarize" ]] && skip_notarize=true
@@ -56,10 +74,26 @@ if [[ -d "/Volumes/Consistent CEO" ]]; then
 fi
 
 say "Building and signing"
-(cd "$DESKTOP" && npm run build)
+# The ${a[@]+...} form keeps macOS's bash 3.2 from calling an empty array unbound.
+(cd "$DESKTOP" && npm run build ${TAURI_TARGET_ARGS[@]+"${TAURI_TARGET_ARGS[@]}"})
 
 DMG="$(ls -t "$BUNDLE_DIR"/dmg/*.dmg 2>/dev/null | head -1)"
 [[ -n "$DMG" && -f "$DMG" ]] || die "no .dmg was produced under $BUNDLE_DIR/dmg"
+
+say "Checking every binary links only macOS's own libraries"
+# A library from Homebrew (/opt/homebrew, /usr/local) or MacPorts (/opt/local)
+# exists only on the build machine; the app would fail to start on a user's Mac.
+bad=0
+for bin in "$APP"/Contents/MacOS/*; do
+  foreign="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' \
+    | grep -v -E '^(/usr/lib/|/System/Library/|@rpath/|@executable_path/|@loader_path/)' || true)"
+  if [[ -n "$foreign" ]]; then
+    echo "    $(basename "$bin") links: $foreign"
+    bad=1
+  fi
+done
+[[ $bad -eq 0 ]] || die "the app links libraries that only exist on this machine (see above)"
+echo "    ok"
 
 say "Verifying the signature before handing it to Apple"
 codesign --verify --deep --strict --verbose=2 "$APP"
@@ -72,8 +106,8 @@ else
   # Prefer the App Store Connect API key the mobile project already submits
   # with: it needs no app-specific password and no Team ID, and it is already
   # on this machine. Fall back to a stored keychain profile.
-  ASC_KEY="${APPLE_API_KEY_PATH:-$REPO_ROOT/mobile/AuthKey_3J4W8Y9522.p8}"
-  ASC_KEY_ID="${APPLE_API_KEY:-3J4W8Y9522}"
+  ASC_KEY="${APPLE_API_KEY_PATH:-$REPO_ROOT/mobile/AuthKey_38K86XR69G.p8}"
+  ASC_KEY_ID="${APPLE_API_KEY:-38K86XR69G}"
   ASC_ISSUER="${APPLE_API_ISSUER:-fd5e0565-896c-44eb-939b-392369d7cc54}"
   if [[ -f "$ASC_KEY" ]]; then
     xcrun notarytool submit "$DMG" --wait \
@@ -92,13 +126,9 @@ else
 fi
 
 say "Staging the installer for the site"
-if [[ -d "$(dirname "$SITE_ASSET")" ]]; then
-  cp "$DMG" "$SITE_ASSET"
-  echo "    $SITE_ASSET"
-  shasum -a 256 "$SITE_ASSET"
-else
-  echo "    landing repo not found at $(dirname "$SITE_ASSET") — leaving it at:"
-  echo "    $DMG"
-fi
+mkdir -p "$OUT_DIR"
+cp "$DMG" "$SITE_ASSET"
+echo "    $SITE_ASSET"
+shasum -a 256 "$SITE_ASSET"
 
 say "Done"

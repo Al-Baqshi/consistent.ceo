@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-a2f"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-agents"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-architect"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-credentials"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1551,7 +1551,7 @@ version = "0.1.0"
 
 [[package]]
 name = "consistent-world-plugins"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-relay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-screen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.18",
  "tracing",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

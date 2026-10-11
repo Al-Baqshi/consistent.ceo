@@ -75,11 +75,16 @@ webauthn-rs = "0.5"
 include_dir = { version = "0.7", optional = true }
 mime_guess = { version = "2", optional = true }
 
-# webauthn-rs pulls in openssl, which has no system copy on windows-msvc — the
-# reason the Windows desktop build was deferred. Vendoring it (build from
-# source; needs perl + nasm, both present on GitHub's windows runners) makes
-# the gateway sidecar compile there. No effect on macOS/Linux builds.
-[target.'cfg(windows)'.dependencies]
+# webauthn-rs pulls in openssl. Vendoring it (built from source and linked
+# statically; needs perl, plus nasm on Windows) is required on:
+# - windows-msvc, which has no system copy;
+# - macOS, which has no usable system copy either. Without this, openssl-sys
+#   finds a Homebrew or MacPorts OpenSSL on the build machine and the shipped
+#   app links /opt/homebrew or /opt/local, so it fails to start on any Mac
+#   without that package manager. Vendoring also makes the Intel <-> Apple
+#   Silicon cross build work.
+# Linux keeps the distribution's libssl.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [dev-dependencies]
