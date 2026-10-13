@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "consistent"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "consistent-world-audio",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "consistent-world-audio"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

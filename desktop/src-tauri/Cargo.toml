@@ -1,6 +1,6 @@
 [package]
 name = "consistent"
-version = "0.2.0"
+version = "0.2.1"
 description = "Consistent CEO native shell — gateway and workspace UI in one window"
 edition = "2021"
 
