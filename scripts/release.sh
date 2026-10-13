@@ -63,8 +63,10 @@ for path in ["desktop/src-tauri/tauri.conf.json", "desktop/package.json"]:
     assert n == 1, f"no version in {path}"
     p.write_text(s)
 PY
+# Refresh only the workspace's own entries in each lockfile. (`cargo metadata`
+# would also fetch every Windows-only dependency, which this Mac never needs.)
 for dir in . desktop/src-tauri desktop/whisper; do
-  (cd "$dir" && cargo metadata --format-version 1 --offline >/dev/null)
+  (cd "$dir" && cargo update --workspace --offline --quiet)
 done
 echo "    $(git diff --stat | tail -1)"
 
