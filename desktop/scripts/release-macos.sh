@@ -134,4 +134,23 @@ cp "$DMG" "$SITE_ASSET"
 echo "    $SITE_ASSET"
 shasum -a 256 "$SITE_ASSET"
 
+# The auto-update package (desktop/src-tauri/src/updater.rs): the app as
+# notarized and stapled above, archived and signed with the update key. The
+# installed app verifies that signature against the public key in
+# tauri.conf.json before installing anything.
+say "Packaging and signing the auto-update archive"
+UPDATER_KEY="${UPDATER_KEY:-$HOME/.consistent-signing/updater.key}"
+[[ -f "$UPDATER_KEY" ]] || die "no update-signing key at $UPDATER_KEY (see docs/macos-signing.md)"
+UPDATE_ASSET="$OUT_DIR/${ASSET_NAME%.dmg}.app.tar.gz"
+# COPYFILE_DISABLE: macOS tar otherwise stores extended attributes (every
+# built app carries com.apple.provenance) as hidden `._*` entries, which the
+# updater refuses to unpack. Apple's tar hides them when listing, so check
+# with a reader that does not.
+COPYFILE_DISABLE=1 tar -czf "$UPDATE_ASSET" -C "$(dirname "$APP")" "$(basename "$APP")"
+python3 -I -c 'import sys, tarfile; sys.exit(any("._" in m.name for m in tarfile.open(sys.argv[1])))' "$UPDATE_ASSET" \
+  || die "the update archive contains macOS metadata entries the updater cannot unpack"
+(cd "$DESKTOP" && npx tauri signer sign -f "$UPDATER_KEY" -p "${UPDATER_KEY_PASSWORD:-}" "$UPDATE_ASSET" </dev/null >/dev/null)
+[[ -s "$UPDATE_ASSET.sig" ]] || die "signing the update archive produced no signature"
+echo "    $UPDATE_ASSET (+ .sig)"
+
 say "Done"

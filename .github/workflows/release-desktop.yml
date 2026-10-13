@@ -20,7 +20,10 @@ permissions:
 
 jobs:
   # A job-level `if` cannot see `matrix`, so the platform choice becomes the
-  # matrix itself. A tag push always builds everything.
+  # matrix itself. A tag push builds Windows only: the macOS installers are
+  # built, signed with the Developer ID, notarized and uploaded by
+  # scripts/release.sh on the maintainer's Mac, and a CI build here would
+  # overwrite them on the release with unsigned copies under the same names.
   plan:
     runs-on: ubuntu-latest
     outputs:
@@ -29,7 +32,7 @@ jobs:
       - id: pick
         shell: bash
         env:
-          PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'all' }}
+          PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'windows' }}
         run: |
           set -euo pipefail
           mac_arm='{"os":"macos-latest","args":"--bundles dmg","name":"macos-arm64","target":"aarch64-apple-darwin"}'

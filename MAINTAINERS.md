@@ -13,15 +13,24 @@ Discussions.
 
 ## Cutting a release
 
-Anyone with write access can do this.
+From the maintainer's Mac, on an up-to-date `main` with a clean tree:
 
-1. Make sure `main` is green in CI.
-2. Raise the version in the root `Cargo.toml` (`[workspace.package]`) and in
-   `desktop/src-tauri/tauri.conf.json`, and commit.
-3. Tag and push: `git tag v1.2.3 && git push origin v1.2.3`.
-4. `release-desktop.yml` builds the desktop installers into a draft release
-   and publishes it when every platform succeeds. `ci.yml` attaches the
-   command-line binaries to the same release and pushes the container image
-   to `ghcr.io`.
-5. Check the release page: three installers, the `consistent-world-*`
-   binaries, and the image under Packages.
+```bash
+scripts/release.sh 0.2.1            # notes generated from the commits
+scripts/release.sh 0.2.1 notes.md   # or your own release notes
+```
+
+It sets the version, builds the Intel and Apple Silicon apps, signs them
+with the Developer ID, has Apple notarize them, packages the auto-update
+archives and `latest.json`, tags the version, and publishes the GitHub
+release. Installed apps find the update within six hours and offer
+"Restart to update" in the menu bar. The website's Download buttons always
+point at the latest release, so nothing else needs touching.
+
+One-time setup on a new Mac is in [docs/macos-signing.md](docs/macos-signing.md).
+Keep a backup of `~/.consistent-signing/`: without `updater.key`, installed
+apps can never be updated again, only reinstalled by hand.
+
+Pushing the tag also runs CI, which attaches the Linux and Windows command-line
+binaries and publishes the Docker image. It never builds macOS, so it cannot
+overwrite the signed Mac files.

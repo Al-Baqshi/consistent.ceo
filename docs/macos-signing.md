@@ -97,6 +97,22 @@ xcrun notarytool store-credentials consistent-notary \
   --apple-id hello@baqshi.com --team-id <TEAM_ID> --password <app-specific-password>
 ```
 
+### 4. Update-signing key (auto-update)
+
+Installed apps only accept an update signed with the key whose public half is
+`plugins.updater.pubkey` in `desktop/src-tauri/tauri.conf.json`. The private
+half lives at `~/.consistent-signing/updater.key` and never enters the repo.
+It was created with:
+
+```sh
+cd desktop && npx tauri signer generate --ci -p "" -w ~/.consistent-signing/updater.key
+```
+
+**Back up `~/.consistent-signing/`** (password manager or an encrypted drive).
+Losing `updater.key` means every installed copy stops updating; generating a
+new one means shipping a new public key, which only reaches users who
+reinstall by hand.
+
 ## Building for this machine
 
 ```sh

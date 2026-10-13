@@ -10,6 +10,7 @@ mod inject;
 mod login;
 mod pty;
 mod shortcuts;
+mod updater;
 mod vault;
 mod voice;
 
@@ -26,6 +27,7 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
+use updater::PendingUpdate;
 use tauri_plugin_shell::ShellExt;
 use vault::{
     vault_device_status, vault_enroll_device, vault_forget_device, vault_revoke_device,
@@ -221,13 +223,59 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     }
 }
 
-// Sets up the OS tray icon with a show/hide/quit menu; quit also kills the
-// gateway sidecar before exiting the app.
-fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+/// Stop everything this process started, before quitting or restarting.
+/// Returns whether it stopped a gateway this process had spawned.
+fn stop_children(app: &tauri::AppHandle) -> bool {
+    let mut stopped_gateway = false;
+    if let Some(state) = app.try_state::<GatewayProcess>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(child) = guard.take() {
+                stopped_gateway = child.kill().is_ok();
+            }
+        }
+    }
+    // Embedded terminals are children of this process; without this a shell
+    // (or a half-finished `codex login`) would be orphaned with its PTY when
+    // the app goes away.
+    if let Some(pty) = app.try_state::<PtySessions>() {
+        pty.kill_all();
+    }
+    stopped_gateway
+}
+
+/// The tray menu: show/hide/quit, plus "Restart to update" once an update is
+/// installed and waiting (`updater.rs`).
+fn tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let show = MenuItem::with_id(app, "show", "Show Consistent", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide Window", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+    let pending = app.try_state::<PendingUpdate>().and_then(|p| p.version());
+    match pending {
+        Some(version) => {
+            let restart = MenuItem::with_id(
+                app,
+                "restart_update",
+                format!("Restart to update to {version}"),
+                true,
+                None::<&str>,
+            )?;
+            Menu::with_items(app, &[&restart, &show, &hide, &quit])
+        }
+        None => Menu::with_items(app, &[&show, &hide, &quit]),
+    }
+}
+
+/// Rebuild the tray menu, e.g. when an update becomes ready.
+pub(crate) fn refresh_tray_menu(app: &tauri::AppHandle) {
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id("consistent-world-tray"), tray_menu(app)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+// Sets up the OS tray icon; quit kills the gateway sidecar before exiting, and
+// "Restart to update" does the same before relaunching into the new version.
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let menu = tray_menu(app)?;
 
     TrayIconBuilder::with_id("consistent-world-tray")
         .tooltip("Consistent")
@@ -245,20 +293,22 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let _ = w.hide();
                 }
             }
-            "quit" => {
-                if let Some(state) = app.try_state::<GatewayProcess>() {
-                    if let Ok(mut guard) = state.0.lock() {
-                        if let Some(child) = guard.take() {
-                            let _ = child.kill();
+            "restart_update" => {
+                // The new version probes the port and attaches to any gateway
+                // it finds; wait for ours to let go, or it would attach to a
+                // dying process and be left with none.
+                if stop_children(app) {
+                    for _ in 0..25 {
+                        if !gateway_already_running() {
+                            break;
                         }
+                        std::thread::sleep(Duration::from_millis(200));
                     }
                 }
-                // Embedded terminals are children of this process; without
-                // this a shell (or a half-finished `codex login`) would be
-                // orphaned with its PTY when the app goes away.
-                if let Some(pty) = app.try_state::<PtySessions>() {
-                    pty.kill_all();
-                }
+                app.restart();
+            }
+            "quit" => {
+                let _ = stop_children(app);
                 app.exit(0);
             }
             _ => {}
@@ -286,6 +336,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![autostart::HIDDEN_ARG]),
@@ -302,6 +353,7 @@ fn main() {
         .manage(GatewayAuth::default())
         .manage(LoginState::default())
         .manage(PtySessions::default())
+        .manage(PendingUpdate::default())
         .invoke_handler(tauri::generate_handler![
             voice_start,
             voice_stop,
@@ -340,6 +392,7 @@ fn main() {
             }
             shortcuts::init(&app_handle);
             autostart::apply_default(&app_handle);
+            updater::spawn(app_handle.clone());
 
             // No external database to start: the gateway runs an embedded,
             // in-process surrealkv store (see DEFAULT_CONFIG [memory].surreal_url).
