@@ -9,7 +9,7 @@
   import BellIcon from '$lib/components/icons/BellIcon.svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { api, getAuthToken, getTenantId, listTenants, setTenantId, type TenantSummary, type PaginatedResponse } from '$lib/api';
+  import { API_BASE, api, getAuthToken, getTenantId, listTenants, setTenantId, type TenantSummary, type PaginatedResponse } from '$lib/api';
   import { feedKindLabel, feedKindNeedsHuman, feedKindTone } from '$lib/feedKinds';
 
   let { children } = $props();
@@ -32,6 +32,19 @@
   let tenantLoading = $state(false);
   let tenantError = $state<string | null>(null);
   let railOpen = $state(false);
+  /** The running gateway's version, from `/health`. Read rather than written
+   *  into the page, so the bar names what is installed after an update. */
+  let gatewayVersion = $state<string | null>(null);
+
+  async function loadGatewayVersion() {
+    try {
+      const res = await fetch(`${API_BASE}/health`);
+      const body = (await res.json()) as { version?: unknown };
+      if (typeof body.version === 'string') gatewayVersion = body.version;
+    } catch (_) {
+      // Nothing to show is better than a wrong number.
+    }
+  }
 
   function setTheme(next: Theme) {
     theme = next;
@@ -270,6 +283,7 @@
     }
     activeTenantId = getTenantId();
     void loadAccountName();
+    void loadGatewayVersion();
     let stored: Theme | null = null;
     try { stored = localStorage.getItem(THEME_KEY) as Theme | null; } catch (_) {}
     const initial: Theme = stored === 'light' || stored === 'dark' ? stored : 'dark';
@@ -317,18 +331,24 @@
   <div class="main">
     <header class="topbar" class:menu-open={notificationsOpen}>
       <div class="topbar-left">
-        <TenantSwitcher
-          workspaces={tenants}
-          activeId={activeTenantId}
-          username={accountUsername}
-          loading={tenantLoading}
-          error={tenantError}
-          onChange={changeTenant}
-        />
+        <!-- Only a gateway several people share has workspaces to switch
+             between; on a personal install the pill would only say "default". -->
+        {#if tenants.length > 1}
+          <TenantSwitcher
+            workspaces={tenants}
+            activeId={activeTenantId}
+            username={accountUsername}
+            loading={tenantLoading}
+            error={tenantError}
+            onChange={changeTenant}
+          />
+        {/if}
       </div>
       <div class="topbar-center">
         <span class="brand">Consistent CEO</span>
-        <span class="version">v0.2.0</span>
+        {#if gatewayVersion}
+          <span class="version">v{gatewayVersion}</span>
+        {/if}
       </div>
       <div class="topbar-right">
         <div class="theme-switch" class:is-dark={theme === 'dark'} class:pending={!mounted} role="group" aria-label="Colour theme">
@@ -473,7 +493,9 @@
     position: relative;
     flex-shrink: 0;
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    /* Equal side columns keep the title centred, including when the left one
+       is empty (a personal install has no workspace switcher). */
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: 12px;
     padding: 0 16px;
@@ -517,6 +539,7 @@
   .topbar-right {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
   }
 

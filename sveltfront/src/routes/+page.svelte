@@ -204,6 +204,9 @@
   let captures = $state<RawCapture[]>([]);
   let captureBusyId = $state<string | null>(null);
   let tenantSummary = $state<TenantSummary | null>(null);
+  /** Workspaces on this gateway. A personal install has one, and naming it
+   *  ("Tenant: default") would only add noise. */
+  let tenantCount = $state(0);
 
   let submitting = $state(false);
   let statusLine = $state<string | null>(null);
@@ -321,9 +324,14 @@
   const hasInput = $derived(Boolean(body.trim()) || selectedAttachments.length > 0);
 
   const activeTenantId = $derived(getTenantId());
+  const inboxLabel = $derived(
+    tenantCount > 1 ? `Tenant: ${tenantSummary?.name ?? activeTenantId}` : 'All entities'
+  );
   const selectedEntityLabel = $derived(
     entityPick === INBOX
-      ? `All entities in ${tenantSummary?.name ?? activeTenantId}`
+      ? tenantCount > 1
+        ? `All entities in ${tenantSummary?.name ?? activeTenantId}`
+        : 'All entities'
       : entities.find((e) => e.id === entityPick)?.name ?? 'Unknown entity'
   );
   const activeEntityIds = $derived(
@@ -484,7 +492,7 @@
         role: 'assistant',
         text: "You're in the workspace inbox. Use this when you're not sure which entity something belongs to, or switch to an entity when you want a focused session.",
         tone: 'default',
-        meta: `Tenant: ${tenantSummary?.name ?? activeTenantId}`
+        meta: inboxLabel
       }
     ];
   }
@@ -840,6 +848,7 @@
       tasks = t ?? [];
       feed = f ?? [];
       tenantSummary = (tenantRows ?? []).find((tenant) => tenant.id === activeTenantId) ?? null;
+      tenantCount = (tenantRows ?? []).length;
       if (pendingInitialEntityId) {
         const exists = entities.some((row) => row.id === pendingInitialEntityId);
         if (exists) entityPick = pendingInitialEntityId;
@@ -1269,7 +1278,7 @@
       id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'user',
       text: outgoing,
-      meta: entityPick === INBOX ? `Tenant: ${tenantSummary?.name ?? activeTenantId}` : selectedEntityLabel,
+      meta: entityPick === INBOX ? inboxLabel : selectedEntityLabel,
       attachments: attachmentsForBubble.length > 0 ? attachmentsForBubble : undefined
     });
 
@@ -1289,7 +1298,7 @@
             sessionId: chatSessionId ?? undefined,
             workspaceContext: `workspace:${activeTenantId}`
           },
-          entityPick === INBOX ? `Tenant: ${tenantSummary?.name ?? activeTenantId}` : selectedEntityLabel
+          entityPick === INBOX ? inboxLabel : selectedEntityLabel
         );
         chatSessionId = response.sessionId ?? response.session_id ?? chatSessionId;
         const reply = response.message?.trim() || 'I got that.';
@@ -1342,7 +1351,7 @@
       id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'user',
       text: outgoing,
-      meta: entityPick === INBOX ? `Tenant: ${tenantSummary?.name ?? activeTenantId}` : selectedEntityLabel
+      meta: entityPick === INBOX ? inboxLabel : selectedEntityLabel
     });
     resetComposerInput();
     submitting = true;
@@ -1654,7 +1663,7 @@
       id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'user',
       text: outgoing,
-      meta: entityPick === INBOX ? `Tenant: ${tenantSummary?.name ?? activeTenantId}` : selectedEntityLabel
+      meta: entityPick === INBOX ? inboxLabel : selectedEntityLabel
     });
     resetComposerInput();
     if (entityPick === INBOX) {
@@ -1790,7 +1799,7 @@
         id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: 'user',
         text: outgoing,
-        meta: entityPick === INBOX ? `Tenant: ${tenantSummary?.name ?? activeTenantId}` : selectedEntityLabel
+        meta: entityPick === INBOX ? inboxLabel : selectedEntityLabel
       });
     }
 
@@ -1957,8 +1966,10 @@
       <span class="context-name">{currentEntity ? currentEntity.name : 'All entities'}</span>
       <span class="context-meta">
         {currentEntity
-          ? `${currentEntity.dept ?? 'Active'} · ${tenantSummary?.name ?? activeTenantId}`
-          : `Tenant: ${tenantSummary?.name ?? activeTenantId}`}
+          ? [currentEntity.dept ?? 'Active', tenantCount > 1 ? tenantSummary?.name ?? activeTenantId : null]
+              .filter(Boolean)
+              .join(' · ')
+          : inboxLabel}
       </span>
       <ChevronIcon size={14} />
     </button>
