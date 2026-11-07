@@ -421,6 +421,38 @@ pub(super) async fn get_remote_status(
     Ok(Json(status))
 }
 
+/// `POST /api/remote/setup`: what `consistent-world remote setup` does, from
+/// the Phone panel. Turns on `tailscale serve` for this gateway's port so a
+/// paired phone can reach this computer over the owner's private tailnet, and
+/// answers with the new status or a plain-words reason it could not.
+pub(super) async fn setup_remote_access(
+    State(state): State<ServerState>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<crate::remote_doctor::RemoteStatus>, (StatusCode, Json<serde_json::Value>)> {
+    require_admin_json(&auth, &state)?;
+    let (port, bind) = state
+        .app_config
+        .as_ref()
+        .map(|c| (c.gateway_port, c.gateway_bind.clone()))
+        .unwrap_or((18800, "127.0.0.1".to_string()));
+    let outcome =
+        tokio::task::spawn_blocking(move || crate::remote_doctor::run_setup(port, &bind))
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "Remote setup did not finish." })),
+                )
+            })?;
+    match outcome {
+        Ok(status) => Ok(Json(status)),
+        Err(e) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
 /// Tenant isolation across the handlers that act on another record by id:
 /// each must answer a principal from another workspace as if the record did
 /// not exist, and do nothing.

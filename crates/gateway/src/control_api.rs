@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -390,6 +390,8 @@ fn feed_visible_in_workspace(
     }
 }
 
+mod browser_api;
+use browser_api::*;
 mod github_device_api;
 use github_device_api::*;
 mod captures_api;
@@ -432,12 +434,16 @@ mod routing_api;
 use routing_api::*;
 mod ollama_api;
 use ollama_api::*;
+mod ai_api;
+use ai_api::*;
 mod capture_chat_api;
 use capture_chat_api::*;
 mod entity_connections_api;
 use entity_connections_api::*;
 mod daily_review;
 use daily_review::*;
+mod reminders_api;
+use reminders_api::*;
 mod skills_api;
 use skills_api::*;
 
@@ -1661,6 +1667,7 @@ pub(crate) async fn internal_create_entity(
         memory_scope: None,
         preferred_model_tier: None,
         allowed_agent_groups: vec![],
+        browser_sites: vec![],
         setup: body.setup.unwrap_or_default(),
         readiness: EntityReadiness::default(),
         entity_runtime: None,
@@ -3007,6 +3014,7 @@ pub fn control_routes(state: ServerState) -> Router {
         .route("/api/audit/turn/{turn_id}", get(list_turn_audit))
         .route("/api/skills", get(list_skills).post(create_skill))
         .route("/api/skills/upload", post(upload_skill))
+        .route("/api/skills/draft", post(draft_skill))
         .route(
             "/api/skills/local",
             get(list_local_skill_sources).post(import_local_skills),
@@ -3026,6 +3034,13 @@ pub fn control_routes(state: ServerState) -> Router {
         .route("/api/tasks/{id}/requeue", post(requeue_task))
         .route("/api/tasks/{id}/cancel", post(cancel_task))
         .route("/api/tasks/{id}/snooze", post(snooze_task))
+        .route("/api/reminders", get(list_reminders).post(create_reminder))
+        .route("/api/reminders/{id}/action", post(reminder_action))
+        .route(
+            "/api/reminders/local-scheduled",
+            post(reminders_local_scheduled),
+        )
+        .route("/api/local-model", get(get_local_model))
         .route("/api/daily-review", get(get_daily_review))
         .route("/api/captures", get(list_captures).post(create_capture))
         .route("/api/captures/{id}", patch(update_capture))
@@ -3150,6 +3165,10 @@ pub fn control_routes(state: ServerState) -> Router {
             get(list_entity_connection_events),
         )
         .route(
+            "/api/entities/{id}/connections/github/token",
+            post(connect_entity_github_token),
+        )
+        .route(
             "/api/entities/{id}/connections/sessions",
             post(create_entity_connection_session),
         )
@@ -3212,6 +3231,10 @@ pub fn control_routes(state: ServerState) -> Router {
             "/api/llm/providers/{name}/models",
             get(list_llm_provider_models),
         )
+        // The AI page: what this computer can think with, and one button.
+        .route("/api/ai", get(get_ai_status))
+        .route("/api/ai/connect", post(connect_ai))
+        .route("/api/ai/choice", delete(clear_ai_choice))
         // First run: download a local model into Ollama, with progress.
         .route(
             "/api/ollama/pull",
@@ -3314,6 +3337,14 @@ pub fn control_routes(state: ServerState) -> Router {
         )
         .route("/api/pair/payload", get(get_pair_payload))
         .route("/api/remote/status", get(get_remote_status))
+        .route("/api/remote/setup", post(setup_remote_access))
+        .route("/api/browser", get(get_browser))
+        .route("/api/browser/open", post(open_browser))
+        .route("/api/browser/close", post(close_browser))
+        .route(
+            "/api/entities/{id}/browser-sites",
+            put(set_entity_browser_sites),
+        )
         .layer(middleware::from_fn(workspace_context_middleware))
         .with_state(state)
 }
@@ -3398,7 +3429,7 @@ mod tests {
         let raw = r#"claude-code CLI failed (exit status: 1): {"is_error":true,"terminal_reason":"api_error"}"#;
         let msg = humanize_provider_error("CLAUDE_CODE_CLI", raw);
         assert!(msg.contains("claude"), "must name the CLI: {msg}");
-        assert!(msg.contains("Test"), "must name the next step: {msg}");
+        assert!(msg.contains("try again"), "must name the next step: {msg}");
     }
 
     #[test]

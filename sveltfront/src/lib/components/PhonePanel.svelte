@@ -12,12 +12,18 @@
     approvePairRequest,
     createPairOffer,
     denyPairRequest,
+    getRemoteStatus,
+    getWifiAccess,
+    setupRemoteAccess,
     listDevices,
     listPairRequests,
     removeDevice,
+    setWifiAccess,
     type PairedDevice,
     type PairOffer,
-    type PendingPairing
+    type PendingPairing,
+    type RemoteStatus,
+    type WifiAccess
   } from '$lib/api';
 
   let devices = $state<PairedDevice[]>([]);
@@ -27,11 +33,80 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
+  // Phone access on Wi-Fi: switched on by the first pairing code when nothing
+  // else reaches this computer, and remembered. Shown so it can be turned off.
+  let wifi = $state<WifiAccess | null>(null);
 
   let poll: ReturnType<typeof setInterval> | null = null;
   let tick: ReturnType<typeof setInterval> | null = null;
 
-  onMount(loadDevices);
+  onMount(() => {
+    void loadDevices();
+    void loadWifi();
+    void loadRemote();
+  });
+
+  async function loadWifi() {
+    try {
+      wifi = await getWifiAccess();
+    } catch {
+      wifi = null;
+    }
+  }
+
+  // Remote access (Tailscale): off by default, switched on here with permission.
+  let remote = $state<RemoteStatus | null>(null);
+  let remoteBusy = $state(false);
+  let remoteError = $state<string | null>(null);
+
+  async function loadRemote() {
+    try {
+      remote = await getRemoteStatus();
+    } catch {
+      remote = null;
+    }
+  }
+
+  async function turnOnRemote() {
+    if (remoteBusy) return;
+    if (
+      !confirm(
+        'Turn on remote access?\n\nThis runs “tailscale serve” on this computer so your phone can reach it from anywhere over your private Tailscale network. It is not opened to the public internet, and you can turn it off in Tailscale at any time.'
+      )
+    )
+      return;
+    remoteBusy = true;
+    remoteError = null;
+    try {
+      remote = await setupRemoteAccess();
+      notice = 'Remote access is on. Make a new code and scan it, and your phone will reach this computer from anywhere.';
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : '';
+      try {
+        remoteError = JSON.parse(raw).error ?? raw;
+      } catch {
+        remoteError = raw || 'Could not turn on remote access.';
+      }
+      await loadRemote();
+    } finally {
+      remoteBusy = false;
+    }
+  }
+
+  async function turnWifiOff() {
+    if (
+      !confirm(
+        'Turn off phone access on Wi-Fi? Your phone will stop reaching this computer at home until you pair again.'
+      )
+    )
+      return;
+    try {
+      wifi = await setWifiAccess(false);
+      cancel();
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Could not turn it off.';
+    }
+  }
   onDestroy(stop);
 
   async function loadDevices() {
@@ -57,6 +132,7 @@
       offer = await createPairOffer();
       pending = [];
       stop();
+      void loadWifi();
       if (!offer.url) return;
       const expires = new Date(offer.expiresAt).getTime();
       const update = () => {
@@ -149,14 +225,18 @@
 
   {#if offer && !offer.url}
     <div class="callout">
-      <p>
-        Your phone has no way to reach this computer yet. Install
-        <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>
-        on both, sign in to the same account, then run
-        <code>consistent-world remote setup</code> once and try again.
-      </p>
+      {#if offer.wifiAvailable}
+        <p>
+          Couldn't find your Wi-Fi network. Make sure this computer is connected to
+          Wi-Fi, then try again.
+        </p>
+      {:else}
+        <p>Your phone can't reach this computer yet.</p>
+      {/if}
+      <button class="ghost" onclick={start} disabled={busy}>Try again</button>
       <button class="ghost" onclick={cancel}>Close</button>
     </div>
+    {@render awayFromHome()}
   {:else if offer}
     <div class="pairing">
       <div class="qr" aria-label="Pairing QR code">
@@ -168,9 +248,15 @@
             In the Consistent CEO app, open <strong>Settings → Scan to connect</strong>
             and point it at this code.
           </p>
+          {#if offer.via === 'lan'}
+            <p>Your phone needs to be on the same Wi-Fi as this computer.</p>
+            <p class="muted">
+              If this computer asks whether to allow incoming connections, click
+              <strong>Allow</strong>.
+            </p>
+          {/if}
           <p class="muted">
             {secondsLeft > 0 ? `Works once, for ${secondsLeft}s more.` : 'Code expired.'}
-            {#if offer.via === 'lan'}Same Wi-Fi only.{/if}
           </p>
           {#if secondsLeft === 0}
             <button class="ghost" onclick={start} disabled={busy}>New code</button>
@@ -189,10 +275,19 @@
         {/if}
       </div>
     </div>
+    {#if offer.via === 'lan'}{@render awayFromHome()}{/if}
   {:else}
     <button class="primary" onclick={start} disabled={busy}>
       {busy ? 'Making a code…' : 'Pair a phone'}
     </button>
+    {@render awayFromHome()}
+  {/if}
+
+  {#if wifi?.enabled}
+    <p class="muted wifi">
+      Phone access on Wi-Fi is on.
+      <button class="link" onclick={turnWifiOff}>Turn off</button>
+    </p>
   {/if}
 
   {#if devices.length}
@@ -211,6 +306,40 @@
     </ul>
   {/if}
 </section>
+
+{#snippet awayFromHome()}
+  <details class="away" open={!!remoteError}>
+    <summary>
+      {remote?.serveUrl ? 'Remote access is on' : 'Want to use it away from home? Set up remote access (optional)'}
+    </summary>
+    {#if remote?.serveUrl}
+      <p>
+        Your phone can reach this computer from anywhere through your private Tailscale network
+        (<code>{remote.serveUrl}</code>). Make a new code if the phone was paired before this was on.
+      </p>
+    {:else if remote && !remote.tailscaleInstalled}
+      <p>
+        Away from home, your phone reaches this computer through
+        <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>
+        (free). Install it on this computer and on your phone and sign in to the same account on both.
+      </p>
+      <button type="button" class="ghost small" onclick={loadRemote}>I installed it, check again</button>
+    {:else if remote && !remote.tailscaleRunning}
+      <p>Tailscale is installed but not signed in. Open it, sign in, and come back.</p>
+      <button type="button" class="ghost small" onclick={loadRemote}>Check again</button>
+    {:else}
+      <p>
+        Tailscale is ready on this computer. One click turns on remote access so your phone reaches
+        this computer from anywhere, over your private network only. Install Tailscale on your phone
+        and sign in to the same account too.
+      </p>
+      <button type="button" class="small" onclick={turnOnRemote} disabled={remoteBusy}>
+        {remoteBusy ? 'Turning on…' : 'Turn on remote access'}
+      </button>
+    {/if}
+    {#if remoteError}<p class="error">{remoteError}</p>{/if}
+  </details>
+{/snippet}
 
 <style>
   .phone {
@@ -303,6 +432,35 @@
 
   .callout p {
     margin: 0 0 0.7rem;
+  }
+
+  .away {
+    margin-top: 0.9rem;
+    color: var(--color-text-muted);
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .away summary {
+    cursor: pointer;
+    color: var(--color-text-secondary);
+  }
+
+  .away p {
+    margin: 0.5rem 0 0;
+  }
+
+  .wifi {
+    margin: 1rem 0 0;
+  }
+
+  .link {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-text-secondary);
+    text-decoration: underline;
+    font-size: inherit;
   }
 
   code {

@@ -27,6 +27,15 @@ import { APIError, isDemoGateway } from '@/api/client';
 import { IconButton, NativeButton, SectionHeader, Txt, useAiConsentGate } from '@/components';
 import { setAiConsent } from '@/lib/aiConsent';
 import { registerDevice } from '@/lib/companion';
+import {
+  cancelModelDownload,
+  deleteLocalModel,
+  formatBytes,
+  pauseModelDownload,
+  refreshLocalModel,
+  startModelDownload,
+  useLocalModel,
+} from '@/lib/localModel';
 import { haptics } from '@/lib/haptics';
 import { isLocalNetworkUrl, openExternal, plainHttpNote, PRIVACY_URL, SUPPORT_URL } from '@/lib/links';
 import { getBoolPref, PREF_NOTIF_ON, PREF_PUSH_ON, setBoolPref } from '@/lib/prefs';
@@ -434,6 +443,13 @@ export default function SettingsScreen() {
           </View>
         </Card>
 
+        {/* On-device AI */}
+        <SectionHeader
+          title="Consistent AI (offline)"
+          caption="Runs on this phone when your computer can’t be reached"
+        />
+        <LocalModelCard />
+
         {/* Privacy */}
         <SectionHeader title="Privacy" />
         <Card>
@@ -614,6 +630,157 @@ function DeleteAccountSheet({
         </View>
       </KeyboardAvoidingView>
     </Modal>
+  );
+}
+
+/**
+ * The one-button download of the on-device model. Once it's here, chat keeps
+ * working (and keeps setting reminders) while the computer is asleep.
+ */
+function LocalModelCard() {
+  const theme = useTheme();
+  const status = useLocalModel((s) => s.status);
+  const manifest = useLocalModel((s) => s.manifest);
+  const written = useLocalModel((s) => s.bytesWritten);
+  const total = useLocalModel((s) => s.totalBytes);
+  const error = useLocalModel((s) => s.error);
+  const recommended = useLocalModel((s) => s.recommended);
+  const ramGb = useLocalModel((s) => s.ramGb);
+  const runtimeAvailable = useLocalModel((s) => s.runtimeAvailable);
+  const hydrated = useLocalModel((s) => s.hydrated);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    void refreshLocalModel();
+  }, []);
+
+  const size = formatBytes(manifest.mobile.approxBytes);
+  const fraction = total > 0 ? Math.min(1, written / total) : 0;
+
+  const download = async (allowCellular = false) => {
+    haptics.tap();
+    setNotice(null);
+    const block = await startModelDownload({ allowCellular });
+    if (block === 'cellular') {
+      Alert.alert(
+        'Download on mobile data?',
+        `The model is ${size}. Downloading on Wi-Fi is recommended.`,
+        [
+          { text: 'Wait for Wi-Fi', style: 'cancel' },
+          { text: 'Download anyway', onPress: () => void download(true) },
+        ],
+      );
+    } else if (block === 'space') {
+      setNotice(`Not enough free space — the model needs about ${size} plus some room to spare.`);
+      haptics.warning();
+    } else if (block === 'offline') {
+      setNotice('This phone is offline. Connect to Wi-Fi, then try again.');
+      haptics.warning();
+    } else if (block === 'unsupported') {
+      setNotice('On-device AI isn’t available here.');
+    }
+  };
+
+  const remove = () => {
+    haptics.tap();
+    Alert.alert('Delete the on-device model?', `Frees about ${size}. You can download it again any time.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => void deleteLocalModel() },
+    ]);
+  };
+
+  return (
+    <Card>
+      <View style={{ paddingVertical: spacing[3], gap: spacing[2] }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[2] }}>
+          <View
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              backgroundColor: status === 'ready' ? theme.colors.success : theme.colors.textMuted,
+            }}
+          />
+          <Txt variant="label" tone={status === 'ready' ? 'success' : 'secondary'}>
+            {status === 'ready'
+              ? 'Ready'
+              : status === 'downloading'
+                ? 'Downloading…'
+                : status === 'paused'
+                  ? 'Paused'
+                  : 'Not downloaded'}
+            {' · '}
+            {manifest.name}
+          </Txt>
+        </View>
+        <Txt variant="caption" tone="muted" style={{ lineHeight: 17 }}>
+          {status === 'ready'
+            ? 'When your computer is asleep or out of reach, chat answers on this phone and can still set reminders. Nothing leaves the device.'
+            : 'Download once and chat keeps working — and keeps setting reminders — when your computer is asleep or out of reach. It runs entirely on this phone.'}
+        </Txt>
+
+        {status === 'downloading' || status === 'paused' ? (
+          <View style={{ gap: spacing[1] }}>
+            <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.colors.bgCardHover, overflow: 'hidden' }}>
+              <View
+                style={{ width: `${Math.round(fraction * 100)}%`, height: '100%', backgroundColor: theme.colors.accent }}
+              />
+            </View>
+            <Txt variant="caption" tone="muted">
+              {formatBytes(written)} of {formatBytes(total)} · {Math.round(fraction * 100)}%
+            </Txt>
+          </View>
+        ) : null}
+
+        {!recommended && status !== 'ready' ? (
+          <Txt variant="caption" tone="danger" style={{ lineHeight: 17 }}>
+            Not recommended on this device: it needs about {manifest.mobile.minRamGb} GB of memory
+            {ramGb ? ` and this one has ${ramGb.toFixed(1)} GB` : ''}. It may be slow or close the app.
+          </Txt>
+        ) : null}
+        {hydrated && !runtimeAvailable ? (
+          <Txt variant="caption" tone="muted" style={{ lineHeight: 17 }}>
+            This build of the app can’t run the model yet — install the latest version to use it.
+          </Txt>
+        ) : null}
+        {error || notice ? (
+          <Txt variant="caption" tone="danger" style={{ lineHeight: 17 }}>
+            {notice ?? error}
+          </Txt>
+        ) : null}
+
+        <View style={{ flexDirection: 'row', gap: spacing[2], marginTop: spacing[1] }}>
+          {status === 'absent' || status === 'error' ? (
+            <NativeButton
+              label={`${status === 'error' ? 'Retry download' : 'Download'} · ${size}`}
+              icon="↓"
+              fullWidth
+              onPress={() => void download()}
+            />
+          ) : null}
+          {status === 'downloading' ? (
+            <>
+              <NativeButton label="Pause" variant="outline" size="sm" style={{ flex: 1 }} onPress={() => void pauseModelDownload()} />
+              <NativeButton label="Cancel" variant="ghost" size="sm" style={{ flex: 1 }} onPress={() => void cancelModelDownload()} />
+            </>
+          ) : null}
+          {status === 'paused' ? (
+            <>
+              <NativeButton label="Resume" size="sm" style={{ flex: 1 }} onPress={() => void download()} />
+              <NativeButton label="Cancel" variant="ghost" size="sm" style={{ flex: 1 }} onPress={() => void cancelModelDownload()} />
+            </>
+          ) : null}
+          {status === 'ready' ? (
+            <NativeButton label={`Delete · frees ${size}`} variant="ghost" size="sm" fullWidth onPress={remove} />
+          ) : null}
+        </View>
+        {status === 'absent' || status === 'error' ? (
+          <Txt variant="caption" tone="muted" style={{ textAlign: 'center' }}>
+            Wi-Fi recommended · downloads from Hugging Face
+          </Txt>
+        ) : null}
+      </View>
+    </Card>
   );
 }
 

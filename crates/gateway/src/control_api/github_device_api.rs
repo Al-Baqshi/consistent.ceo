@@ -186,3 +186,208 @@ pub(super) async fn complete_github_device_authorization(
         scopes,
     ))
 }
+
+/// `POST /api/entities/{id}/connections/github/token` body.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ConnectGithubTokenBody {
+    /// A personal access token to verify and keep. Absent: use the GitHub CLI.
+    #[serde(default)]
+    token: Option<String>,
+}
+
+fn json_error(
+    status: StatusCode,
+    message: impl Into<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(serde_json::json!({ "error": message.into() })))
+}
+
+/// The token the signed-in GitHub CLI (`gh`) holds, if there is one.
+async fn github_cli_token() -> Result<String, String> {
+    let Some(gh) = consistent_world_tools::coding_agent::locate_program("gh") else {
+        return Err(
+            "The GitHub CLI (gh) isn't installed here. Paste a token instead, or install gh \
+             from https://cli.github.com and run `gh auth login`."
+                .to_string(),
+        );
+    };
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        consistent_world_common::platform::command(&gh)
+            .args(["auth", "token"])
+            .output(),
+    )
+    .await
+    .map_err(|_| "The GitHub CLI didn't answer. Try again, or paste a token.".to_string())?
+    .map_err(|e| format!("Could not run the GitHub CLI: {e}"))?;
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || token.is_empty() {
+        return Err(
+            "The GitHub CLI isn't signed in. Run `gh auth login` in Terminal, or paste a token."
+                .to_string(),
+        );
+    }
+    Ok(token)
+}
+
+/// Ask GitHub who this token belongs to. `(login, numeric id, scopes)`.
+async fn verify_github_token(token: &str) -> Result<(String, String, Vec<String>), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("consistent-world-gateway")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get("https://api.github.com/user")
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|_| "Could not reach GitHub. Check the internet connection.".to_string())?;
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err("GitHub rejected that token. Check it hasn't expired and try again.".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("GitHub answered {status}. Try again in a moment."));
+    }
+    let scopes: Vec<String> = response
+        .headers()
+        .get("x-oauth-scopes")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| "GitHub's answer wasn't readable.".to_string())?;
+    let login = body["login"]
+        .as_str()
+        .ok_or_else(|| "GitHub didn't say whose token this is.".to_string())?
+        .to_string();
+    let id = body["id"]
+        .as_u64()
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    Ok((login, id, scopes))
+}
+
+/// Connect GitHub to an entity without the OAuth app: verify a pasted token or
+/// the GitHub CLI's, keep it in the keychain, and record the account. Private
+/// repository imports read the token from the same place the browser sign-in
+/// would have put it, so nothing downstream cares which path was used.
+pub(super) async fn connect_entity_github_token(
+    State(state): State<ServerState>,
+    Extension(workspace): Extension<WorkspaceCtx>,
+    Path(entity_id): Path<String>,
+    Json(body): Json<ConnectGithubTokenBody>,
+) -> Result<Json<EntityConnection>, (StatusCode, Json<serde_json::Value>)> {
+    let s = control(&state).map_err(|c| json_error(c, "The app isn't ready yet."))?;
+    {
+        let entities = s.entities.read().await;
+        if !entities.iter().any(|e| {
+            e.id == entity_id
+                && is_entity_visible(e, &workspace.id, Some(workspace.principal_id.as_str()))
+        }) {
+            return Err(json_error(StatusCode::NOT_FOUND, "No such entity."));
+        }
+    }
+    let (token, source) = match body.token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => (t.to_string(), "token"),
+        None => (
+            github_cli_token()
+                .await
+                .map_err(|m| json_error(StatusCode::BAD_REQUEST, m))?,
+            "gh_cli",
+        ),
+    };
+    let (login, account_id, scopes) = verify_github_token(&token)
+        .await
+        .map_err(|m| json_error(StatusCode::BAD_REQUEST, m))?;
+
+    // One GitHub connection per entity: a second connect replaces the first's
+    // secret rather than stacking duplicates.
+    let existing_id = s
+        .entity_connections
+        .read()
+        .await
+        .iter()
+        .find(|c| c.entity_id == entity_id && c.provider.eq_ignore_ascii_case("github"))
+        .map(|c| c.id.clone());
+    let connection_id = existing_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let secret_ref =
+        store_connection_secret_and_ref(&state, &connection_id, None, Some(token))
+            .map_err(|_| {
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "The token was fine, but saving it to the keychain failed.",
+                )
+            })?;
+    let now = Utc::now().to_rfc3339();
+    let config = serde_json::json!({
+        "authType": if source == "gh_cli" { "github_cli" } else { "github_token" },
+        "accepts": ["repo", "readme"],
+        "tokenType": "personal"
+    });
+    let connection = {
+        let mut connections = s.entity_connections.write().await;
+        if let Some(c) = connections.iter_mut().find(|c| c.id == connection_id) {
+            c.status = "connected".to_string();
+            c.secret_ref = secret_ref;
+            c.external_account_id = Some(account_id).filter(|v| !v.is_empty());
+            c.external_handle = Some(login.clone());
+            c.scopes = scopes;
+            c.config = config;
+            c.last_error = None;
+            c.last_checked_at = Some(now.clone());
+            c.updated_at = now.clone();
+            c.clone()
+        } else {
+            let connection = EntityConnection {
+                id: connection_id.clone(),
+                entity_id: entity_id.clone(),
+                kind: "api_service".to_string(),
+                provider: "github".to_string(),
+                label: format!("GitHub · @{login}"),
+                status: "connected".to_string(),
+                capability_state: serde_json::json!({
+                    "available": ["repo", "readme"],
+                    "granted": ["repo", "readme"],
+                    "verification": { "status": "verified" }
+                }),
+                config,
+                secret_ref,
+                external_account_id: Some(account_id).filter(|v| !v.is_empty()),
+                external_handle: Some(login.clone()),
+                scopes,
+                last_checked_at: Some(now.clone()),
+                last_error: None,
+                created_by: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            connections.push(connection.clone());
+            connection
+        }
+    };
+    s.append_entity_connection_event(EntityConnectionEvent {
+        id: Uuid::new_v4().to_string(),
+        timestamp: now,
+        entity_id,
+        connection_id,
+        kind: if existing_id.is_some() {
+            EntityConnectionEventKind::SecretRotated
+        } else {
+            EntityConnectionEventKind::ConnectionCreated
+        },
+        detail: Some(format!("github @{login} via {source}")),
+    })
+    .await;
+    Ok(Json(connection))
+}

@@ -1085,9 +1085,20 @@ pub fn llm_ready_for_entity_enrichment(config: &AppConfig) -> bool {
         config.llm_provider.as_str(),
         config.default_model.as_str(),
     );
-    let Some((_base, api_key_env, _model)) = resolved else {
+    let Some((base, api_key_env, _model)) = resolved else {
         return false;
     };
+    // Once the machine has been looked at, trust that over key presence: a
+    // keyless lane (`claude-code`) "has its key" even when the CLI is missing,
+    // and a dead configured lane is fine when another brain can take the call.
+    if let Some(detection) = crate::ai_brain::detection() {
+        if crate::ai_brain::any_ready() {
+            return true;
+        }
+        if let Some(lane) = crate::ai_brain::lane_of(&base, &api_key_env) {
+            return detection.usable(lane);
+        }
+    }
     crate::credentials_resolver::llm_secret_configured(&api_key_env)
 }
 

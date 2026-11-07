@@ -50,6 +50,11 @@ This repository is a Rust workspace centered on the `consistent-world-gateway` b
 - **Prompt pipeline** — `prompt_assembly.rs` (pure `assemble_system_prompt(&CanonicalInputs)`; SOUL → director → entity → mission, with optional lessons). Wired into `chat_agent.rs::build_initial_messages`.
 - **Hot-swap LLM** — `credentials_resolver.rs::resolve_llm_api_key` re-reads env+keyring per turn; settings UI probes new keys before keyring write.
 
+### Local model training (`training/`, `crates/gateway/src/training.rs`)
+- `consistent-world training context|render-beats|render-chats|traces` renders fine-tuning prompts with the production prompt builders and live tool schemas; keep it that way so training data never drifts from runtime prompts.
+- `CONSISTENT_WORLD_TRAINING_TRACES=1` records every LLM exchange (wrapped in `capture::build_llm_client`) to `~/.consistent-world/training/traces/`.
+- Python pipeline (scenario generation → teacher distillation → Unsloth LoRA → GGUF → Ollama `consistent-gemma`) is documented in `training/README.md`.
+
 ### Agent execution model
 - Core loop: `crates/agents/src/agent.rs`.
 - For each message:

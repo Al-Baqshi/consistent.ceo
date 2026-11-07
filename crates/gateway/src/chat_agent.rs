@@ -40,7 +40,7 @@ const HISTORY_TURNS: usize = 20;
 
 /// System prompt: lean, natural, capability-aware. Single coherent voice — no
 /// 5-block concatenation of internal scaffolding like the old pipeline.
-fn system_prompt(entity: Option<&Entity>) -> String {
+pub(crate) fn system_prompt(entity: Option<&Entity>) -> String {
     let mut s = String::new();
     s.push_str(
         "You are Consistent CEO — the user's chief of staff across every venture, project and person they run. Work like the best operator they could hire: calm, precise, proactive, and honest about what is and isn't done. Warm and direct; no filler, no robotic ticketing tone.\n\n\
@@ -64,7 +64,9 @@ fn system_prompt(entity: Option<&Entity>) -> String {
          3. After a tool succeeds, confirm briefly in human language. Don't recite IDs or JSON. One short sentence is enough.\n\
          4. Never invent IDs, links, or capabilities you don't have. If something fails, say so plainly.\n\
          5. Match the user's register. If they're casual, be casual. If they're shipping work, be crisp.\n\
-         6. When an answer spans several ventures, lead each line with the venture's name so the user can scan across companies.",
+         6. When an answer spans several ventures, lead each line with the venture's name so the user can scan across companies.\n\
+         7. You are the user's reminder that never forgets. Anything they need to do gets a time: if they gave one, use it; if not, set it for tomorrow 9am and say so in one short clause. Use `set_reminder` for reminders, or `create_task` / `create_note` with `when` when they are capturing work or a note. A to-do stated plainly (\"take a photo and send it to ABT\") means \"track this for me\", never \"do it now\": capture it, don't explain what you can't do. Consistent follows up on its own until they mark it done.\n\
+         8. Never say you set, saved, scheduled, or created anything unless the tool call for it ran this turn and returned ok.",
     );
     if let Some(e) = entity {
         s.push_str("\n\nActive project context:\n");
@@ -96,7 +98,7 @@ fn system_prompt(entity: Option<&Entity>) -> String {
 }
 
 // Convert each registered Tool into the wire-format ToolDefinition the LLM API expects.
-fn tool_defs(tools: &[Box<dyn Tool>]) -> Vec<ToolDefinition> {
+pub(crate) fn tool_defs(tools: &[Box<dyn Tool>]) -> Vec<ToolDefinition> {
     tools
         .iter()
         .map(|t| ToolDefinition {
@@ -109,6 +111,149 @@ fn tool_defs(tools: &[Box<dyn Tool>]) -> Vec<ToolDefinition> {
 
 fn find_tool<'a>(tools: &'a [Box<dyn Tool>], name: &str) -> Option<&'a dyn Tool> {
     tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
+}
+
+/// The reminder reflex: a short answer ("done", "push it to tomorrow",
+/// "drop it") to a reminder the assistant just mentioned is applied
+/// directly, with no model call. Instant on any hardware, and it can't be
+/// "claimed" without happening. Anything less certain goes to the model.
+async fn reminder_reflex(
+    control: &ControlState,
+    entity: Option<&Entity>,
+    history: &[CaptureChatMessage],
+    message: &str,
+    tz: Option<i32>,
+) -> Option<(String, ChatAction)> {
+    let entity = entity?;
+    let last_assistant = history
+        .iter()
+        .rev()
+        .find(|h| h.role == "assistant" && !h.content.trim().is_empty())?;
+    let now = chrono::Utc::now();
+    let action = crate::reminders::parse_reply(message, now, tz)?;
+    let updated = {
+        let mut tasks = control.tasks.write().await;
+        let target_id = {
+            let mine: Vec<&crate::state::Task> = tasks
+                .iter()
+                .filter(|t| t.entity_id.as_deref() == Some(entity.id.as_str()))
+                .collect();
+            crate::reminders::reply_target(&mine, &last_assistant.content)?
+                .id
+                .clone()
+        };
+        let t = tasks.iter_mut().find(|t| t.id == target_id)?;
+        crate::reminders::apply_action(t, &action, tz);
+        t.clone()
+    };
+    control.persist_task_row(&updated).await;
+    let label = match action {
+        crate::reminders::ReminderAction::Done => "done",
+        crate::reminders::ReminderAction::Cancel => "cancel",
+        crate::reminders::ReminderAction::At(_) => "snooze",
+    };
+    crate::training::record_outcome(&updated, label, "chat_reflex");
+    tracing::info!(task_id = %updated.id, "chat: reminder reflex applied a reply without the model");
+    let reply = crate::reminders::reply_confirmation(&updated, &action, tz);
+    Some((
+        reply.clone(),
+        ChatAction {
+            action_type: "task_update".to_string(),
+            description: reply,
+            result_id: Some(updated.id.clone()),
+            status: "completed".to_string(),
+        },
+    ))
+}
+
+/// The chat entity's open reminders, ids included, for `update_task`.
+async fn open_reminders_block(control: &ControlState, entity: Option<&Entity>) -> Option<String> {
+    let entity = entity?;
+    let tasks = control.tasks.read().await;
+    let mine: Vec<&crate::state::Task> = tasks
+        .iter()
+        .filter(|t| t.entity_id.as_deref() == Some(entity.id.as_str()))
+        .collect();
+    crate::reminders::chat_block(&mine, chrono::Utc::now())
+}
+
+fn join_blocks(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Phrases that report a side effect as done. Small local models say these
+/// without calling the tool, which for a reminder app means a reminder the
+/// user believes exists and never fires.
+const ACTION_CLAIMS: &[&str] = &[
+    "i've set",
+    "i have set",
+    "i set a reminder",
+    "i set up",
+    "i've scheduled",
+    "i have scheduled",
+    "i scheduled",
+    "i've saved",
+    "i have saved",
+    "i saved",
+    "i've created",
+    "i have created",
+    "i created",
+    "i've added",
+    "i have added",
+    "i added",
+    "i've noted",
+    "reminder is set",
+    "reminder has been set",
+    "i'll remind you",
+    "i will remind you",
+    "i've put",
+    "has been saved",
+    "has been created",
+    "has been scheduled",
+    "i've marked",
+    "i have marked",
+    "marked it",
+    "marked as done",
+    "marked as complete",
+    "marked complete",
+    "task marked",
+    "reminder marked",
+    "off the list",
+    "off your list",
+    "crossed it off",
+    "crossed off",
+    "i've updated",
+    "i have updated",
+    "i've moved",
+    "i've snoozed",
+    "i've rescheduled",
+    "i've cancelled",
+    "i've removed",
+];
+
+fn claims_unbacked_action(text: &str) -> bool {
+    let lower = text.to_lowercase().replace('’', "'");
+    ACTION_CLAIMS.iter().any(|c| lower.contains(c))
+}
+
+const CLAIM_CHECK: &str = "[check] Your reply says something was set, saved, scheduled, or created, but no tool ran this turn, so nothing happened. If the user wants it done, call the right tool now. Otherwise reply without claiming any action.";
+
+fn push_claim_check(messages: &mut Vec<ChatMessage>, claimed: String) {
+    messages.push(ChatMessage {
+        role: Role::Assistant,
+        content: claimed,
+        tool_calls: None,
+        tool_call_id: None,
+    });
+    messages.push(ChatMessage {
+        role: Role::User,
+        content: CLAIM_CHECK.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+    });
 }
 
 // Read-only tools are safe to replay from the per-turn cache; everything else
@@ -171,7 +316,7 @@ async fn execute_one_tool(
 
 // Assemble the message list sent to the LLM: system prompt(s) first, then the
 // trimmed conversation history, then the new user turn.
-fn build_initial_messages(
+pub(crate) fn build_initial_messages(
     history: &[CaptureChatMessage],
     user_message: &str,
     entity: Option<&Entity>,
@@ -687,12 +832,15 @@ pub async fn run_chat_turn(
     let tool_definitions = tool_defs(&tools);
 
     let canonical_block = build_canonical_block(state, entity_context.as_ref(), &req.message).await;
-    let skills_block = build_skills_block(
-        state,
-        workspace_id,
-        entity_context.as_ref().map(|e| e.id.as_str()),
-    )
-    .await;
+    let skills_block = join_blocks(
+        build_skills_block(
+            state,
+            workspace_id,
+            entity_context.as_ref().map(|e| e.id.as_str()),
+        )
+        .await,
+        open_reminders_block(control, entity_context.as_ref()).await,
+    );
     let mut messages = build_initial_messages(
         &req.history,
         &req.message,
@@ -707,8 +855,24 @@ pub async fn run_chat_turn(
     let mut observed: Vec<consistent_world_architect::ObservedFact> = Vec::new();
     let mut tool_cache: HashMap<String, ToolResult> = HashMap::new();
     let mut final_text = String::new();
+    let mut claim_checked = false;
+    let reflex = reminder_reflex(
+        control,
+        entity_context.as_ref(),
+        &req.history,
+        &req.message,
+        req.timezone_offset_minutes,
+    )
+    .await;
+    let iterations = if let Some((text, action)) = reflex {
+        final_text = text;
+        actions.push(action);
+        0
+    } else {
+        MAX_TOOL_ITERATIONS
+    };
 
-    for iteration in 0..MAX_TOOL_ITERATIONS {
+    for iteration in 0..iterations {
         let request = CompletionRequest {
             model: model_id.clone(),
             messages: messages.clone(),
@@ -737,7 +901,20 @@ pub async fn run_chat_turn(
         .await;
 
         if response.tool_calls.is_empty() {
-            final_text = response.content.unwrap_or_default().trim().to_string();
+            let text = response.content.unwrap_or_default().trim().to_string();
+            if !claim_checked
+                && actions.is_empty()
+                && iteration + 1 < MAX_TOOL_ITERATIONS
+                && claims_unbacked_action(&text)
+            {
+                claim_checked = true;
+                tracing::info!(
+                    "chat agent: reply claimed an action no tool performed; asking again"
+                );
+                push_claim_check(&mut messages, text);
+                continue;
+            }
+            final_text = text;
             tracing::debug!(iteration, "chat agent: final text produced");
             break;
         }
@@ -991,12 +1168,15 @@ pub async fn stream_chat_turn_ndjson(
 
     let canonical_block =
         build_canonical_block(&state, entity_context.as_ref(), &req.message).await;
-    let skills_block = build_skills_block(
-        &state,
-        &workspace_id,
-        entity_context.as_ref().map(|e| e.id.as_str()),
-    )
-    .await;
+    let skills_block = join_blocks(
+        build_skills_block(
+            &state,
+            &workspace_id,
+            entity_context.as_ref().map(|e| e.id.as_str()),
+        )
+        .await,
+        open_reminders_block(&control, entity_context.as_ref()).await,
+    );
     let initial_messages = build_initial_messages(
         &req.history,
         &req.message,
@@ -1006,8 +1186,17 @@ pub async fn stream_chat_turn_ndjson(
         skills_block.as_deref(),
     );
 
+    let reflex = reminder_reflex(
+        &control,
+        entity_context.as_ref(),
+        &req.history,
+        &req.message,
+        req.timezone_offset_minutes,
+    )
+    .await;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(128);
     let ctx = StreamingTurnCtx {
+        reflex,
         state: state.clone(),
         control: control.clone(),
         workspace_id: workspace_id.clone(),
@@ -1028,6 +1217,8 @@ pub async fn stream_chat_turn_ndjson(
 /// the non-streaming path: session bookkeeping, entity conversation memory,
 /// and smart routing on the final payload.
 struct StreamingTurnCtx {
+    /// Set when the reminder reflex already answered this turn.
+    reflex: Option<(String, ChatAction)>,
     state: crate::state::ServerState,
     control: Arc<ControlState>,
     workspace_id: String,
@@ -1063,6 +1254,14 @@ async fn run_streaming_task(
     let mut observed: Vec<consistent_world_architect::ObservedFact> = Vec::new();
     let mut tool_cache: HashMap<String, ToolResult> = HashMap::new();
     let model_id = provider.model.clone();
+    let mut claim_checked = false;
+
+    if let Some((text, action)) = ctx.reflex.clone() {
+        let line = json!({ "type": "token", "text": text }).to_string() + "\n";
+        let _ = tx.send(Ok(Bytes::from(line))).await;
+        emit_done(&ctx, &tx, vec![action], text, true, observed).await;
+        return;
+    }
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
         // Stream the actual turn once. Streaming providers also emit tool-call
@@ -1155,15 +1354,21 @@ async fn run_streaming_task(
             }
         };
         if tool_calls.is_empty() {
-            emit_done(
-                &ctx,
-                &tx,
-                actions,
-                assistant_content.trim().to_string(),
-                true,
-                observed,
-            )
-            .await;
+            let text = assistant_content.trim().to_string();
+            if !claim_checked
+                && actions.is_empty()
+                && iteration + 1 < MAX_TOOL_ITERATIONS
+                && claims_unbacked_action(&text)
+            {
+                // The streamed claim is replaced by the final `done` message.
+                claim_checked = true;
+                tracing::info!(
+                    "stream chat: reply claimed an action no tool performed; asking again"
+                );
+                push_claim_check(&mut messages, text);
+                continue;
+            }
+            emit_done(&ctx, &tx, actions, text, true, observed).await;
             return;
         }
 
@@ -1297,6 +1502,24 @@ async fn emit_done(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spots_claims_that_need_a_tool() {
+        assert!(claims_unbacked_action(
+            "Done — I’ve set a reminder for 6pm."
+        ));
+        assert!(claims_unbacked_action("I'll remind you tomorrow morning."));
+        assert!(claims_unbacked_action("Your note has been saved."));
+        assert!(claims_unbacked_action(
+            "Noted. I'll take that off the list."
+        ));
+        assert!(!claims_unbacked_action(
+            "Want me to set a reminder for that?"
+        ));
+        assert!(!claims_unbacked_action(
+            "Here's a polite way to say no to a client."
+        ));
+    }
 
     fn biz(id: &str, name: &str) -> Entity {
         Entity {

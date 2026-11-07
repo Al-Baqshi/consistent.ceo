@@ -76,6 +76,9 @@ pub enum BeatIntent {
     /// queue the next iteration's executable work. The only beat intent that
     /// causes work to happen rather than prose to be written.
     Drive,
+    /// Hourly check-in across everything the owner has open (reminders,
+    /// follow-ups, overdue work). Silent unless something changed.
+    Loops,
 }
 
 impl BeatIntent {
@@ -86,6 +89,7 @@ impl BeatIntent {
             BeatIntent::Review => "review",
             BeatIntent::Ideas => "ideas",
             BeatIntent::Drive => "drive",
+            BeatIntent::Loops => "loops",
         }
     }
 
@@ -96,6 +100,7 @@ impl BeatIntent {
             "review" => Some(BeatIntent::Review),
             "ideas" => Some(BeatIntent::Ideas),
             "drive" => Some(BeatIntent::Drive),
+            "loops" => Some(BeatIntent::Loops),
             _ => None,
         }
     }
@@ -562,7 +567,78 @@ pub fn default_beat_plan(entity: &Entity) -> Vec<DefaultBeat> {
         focus: review_focus(archetype).to_string(),
     });
 
+    if archetype == EntityArchetype::Personal {
+        plan.push(open_loops_plan());
+    }
+
     plan
+}
+
+pub const OPEN_LOOPS_SLUG: &str = "open-loops";
+
+/// The hourly check-in on a Personal Space. It looks across everything the
+/// owner has open and speaks only when something is due, overdue, or stuck.
+pub fn open_loops_plan() -> DefaultBeat {
+    DefaultBeat {
+        slug: OPEN_LOOPS_SLUG,
+        name: "Hourly check-in".to_string(),
+        director_id: "operations",
+        cron: "0 0 * * * *",
+        intent: BeatIntent::Loops,
+        focus: "Keep the owner's promises from slipping: the one or two open items that \
+                matter this hour, each with the next concrete step."
+            .to_string(),
+    }
+}
+
+/// Give every Personal Space the hourly check-in if it doesn't have one yet.
+/// Separate from the backfill, which skips entities that already have beats.
+pub async fn ensure_open_loops_beats(
+    store: &dyn HeartbeatStore,
+    entities: &[Entity],
+) -> Result<usize> {
+    let existing = store.list_all().await?;
+    let mut written = 0usize;
+    for entity in entities {
+        if classify(entity) != EntityArchetype::Personal || opted_out(entity) {
+            continue;
+        }
+        let id = beat_id(&entity.id, OPEN_LOOPS_SLUG);
+        if existing.iter().any(|h| h.id == id) {
+            continue;
+        }
+        let plan = open_loops_plan();
+        let now = Utc::now();
+        let mut hb = Heartbeat {
+            id,
+            workspace_id: entity.workspace_id.clone(),
+            name: plan.name.clone(),
+            enabled: true,
+            target_kind: "entity".to_string(),
+            target_id: Some(entity.id.clone()),
+            director_id: plan.director_id.to_string(),
+            cron: Some(plan.cron.to_string()),
+            cadence_secs: None,
+            condition: Some(plan.condition()),
+            last_fired_at: None,
+            next_fire_at: None,
+            lease_until: None,
+            lease_token: None,
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+        };
+        hb.next_fire_at = crate::heartbeat_store::next_fire_at(&hb, now).map(|d| d.to_rfc3339());
+        match store.upsert(&hb).await {
+            Ok(()) => written += 1,
+            Err(e) => {
+                tracing::warn!(entity_id = %entity.id, error = %e, "open-loops beat: upsert failed")
+            }
+        }
+    }
+    if written > 0 {
+        tracing::info!(beats = written, "provisioned hourly open-loops check-ins");
+    }
+    Ok(written)
 }
 
 /// Materialise the plan as persistable rows. `next_fire_at` is left unset so

@@ -187,6 +187,14 @@ pub fn is_notifiable(kind: &OperatorFeedKind) -> bool {
 
 /// Human-facing title for a pushed event.
 fn notification_title(event: &OperatorFeedEvent) -> String {
+    // Reminder nudges already say what they are ("Reminder: …", "Still open: …").
+    if event.kind == OperatorFeedKind::ScheduledTaskFired
+        && ["Reminder", "Still open", "Still relevant"]
+            .iter()
+            .any(|p| event.title.starts_with(p))
+    {
+        return truncate(&event.title, 70);
+    }
     let prefix = match event.kind {
         OperatorFeedKind::ScheduledTaskFired => "Reminder",
         OperatorFeedKind::ApprovalNeeded | OperatorFeedKind::ApprovalRequestCreated => {
@@ -406,18 +414,28 @@ impl NotificationDispatcher {
             "approvalId": signal.event.approval_id,
         });
 
+        // Reminder nudges carry the phone's "reminder" category so the
+        // notification itself offers Done / Snooze.
+        let category = (signal.event.kind == OperatorFeedKind::ScheduledTaskFired
+            && signal.event.task_id.is_some())
+        .then_some("reminder");
+
         for chunk in fresh.chunks(EXPO_BATCH_MAX) {
             let messages: Vec<serde_json::Value> = chunk
                 .iter()
                 .filter_map(|d| d.push_token.as_deref())
                 .map(|token| {
-                    serde_json::json!({
+                    let mut m = serde_json::json!({
                         "to": token,
                         "title": title,
                         "body": body,
                         "sound": "default",
                         "data": data,
-                    })
+                    });
+                    if let Some(c) = category {
+                        m["categoryId"] = serde_json::json!(c);
+                    }
+                    m
                 })
                 .collect();
             if messages.is_empty() {

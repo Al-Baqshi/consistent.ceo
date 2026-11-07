@@ -124,7 +124,13 @@ pub struct BeatBrief {
     pub focus: Option<String>,
     /// Summaries of the most recent beats for this entity, newest first.
     pub recent: Vec<String>,
+    /// Loops beats only: one line per open item (reminders, follow-ups,
+    /// overdue work), already ordered by urgency.
+    pub open_items: Vec<String>,
 }
+
+/// What a Loops beat answers when nothing needs the owner this hour.
+pub const SKIP_REPLY: &str = "SKIP";
 
 /// How many prior beat summaries to replay. Enough for the model to see a
 /// direction of travel, few enough to stay cheap.
@@ -154,6 +160,13 @@ fn intent_instruction(intent: BeatIntent) -> &'static str {
             "In ≤150 words, review the period since the last review against this entity's goal: what \
              actually moved, what stalled, and the one correction to make next. Name the evidence you \
              are relying on. If nothing moved, say so plainly rather than padding."
+        }
+        BeatIntent::Loops => {
+            "This is the hourly check-in. Below is everything the owner has open right now. \
+             In at most 60 words, nudge them about the one or two items that matter most this \
+             hour, each with the next concrete step; name the person or thing involved. If an \
+             item has been nudged several times, ask plainly whether it is still relevant. If \
+             nothing below needs them this hour, reply with exactly SKIP."
         }
         BeatIntent::Drive => {
             "Report in ≤120 words on the mission you are driving: what the last round of work \
@@ -196,6 +209,13 @@ pub(crate) fn heartbeat_user_prompt(
             {
                 out.push_str("\n\nThis beat's standing brief: ");
                 out.push_str(focus);
+            }
+            if !brief.open_items.is_empty() {
+                out.push_str("\n\nOpen right now (most urgent first):");
+                for item in &brief.open_items {
+                    out.push_str("\n- ");
+                    out.push_str(item.trim());
+                }
             }
             if !brief.recent.is_empty() {
                 out.push_str(
@@ -246,6 +266,18 @@ pub(crate) fn build_request(
     )
 }
 
+/// Sampling temperature for heartbeats when the director doesn't set one.
+pub const BEAT_TEMPERATURE: f32 = 0.4;
+
+/// Stands in for the director's own prompt on the hourly check-in. The
+/// group directors carry long workflows and "Output style" headings written
+/// for reports; a check-in is two warm sentences, and a smaller prompt is
+/// also what keeps it fast on a laptop CPU. Rules and lessons still apply.
+const CHECK_IN_PERSONA: &str = "# Personal chief of staff\n\n\
+You keep the owner's promises from slipping. Speak briefly and warmly, only about what \
+needs them now, in plain sentences with no headings or lists. Name the person or thing \
+involved and the next concrete step.";
+
 /// [`build_request`] plus the entity's enabled knowledge docs (README, repo
 /// map, conventions — see `entity_knowledge`), which ride the system prompt
 /// so a beat can reason about the project, not just its name.
@@ -261,6 +293,16 @@ pub(crate) fn build_request_with_docs(
     docs: &[EntityDoc],
     fired_at: DateTime<Utc>,
 ) -> CompletionRequest {
+    let check_in;
+    let director = if beat.map(|b| b.intent) == Some(BeatIntent::Loops) {
+        check_in = Director {
+            prompt: CHECK_IN_PERSONA.to_string(),
+            ..director.clone()
+        };
+        &check_in
+    } else {
+        director
+    };
     let mut system = assemble_system_prompt(&CanonicalInputs {
         soul: None,
         director: Some(director),
@@ -305,7 +347,10 @@ pub(crate) fn build_request_with_docs(
         ],
         tools: None,
         max_tokens: Some(400),
-        temperature: director.temperature,
+        // A director may set its own; otherwise low and fixed. Small local
+        // models default to 1.0, which makes a nudge read differently every
+        // hour for the same facts — the opposite of "consistent".
+        temperature: director.temperature.or(Some(BEAT_TEMPERATURE)),
         stream: false,
     }
 }
@@ -667,6 +712,7 @@ mod tests {
                 Some(&BeatBrief {
                     intent,
                     focus: None,
+                    open_items: Vec::new(),
                     recent: vec![],
                 }),
             )
@@ -692,6 +738,7 @@ mod tests {
             Some(&BeatBrief {
                 intent: BeatIntent::Reminder,
                 focus: Some("Blockers first.".to_string()),
+                open_items: Vec::new(),
                 recent: vec![
                     "Variation #12 is still unsigned.".to_string(),
                     "Tile schedule slipped a week.".to_string(),

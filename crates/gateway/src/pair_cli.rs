@@ -19,7 +19,12 @@ use crate::config::AppConfig;
 /// lives 90 s; the request it turns into lives three minutes).
 const WAIT: Duration = Duration::from_secs(240);
 
-fn machine_token(cfg: &AppConfig, config_path: &str) -> Option<String> {
+/// The optional extra, offered calmly and never as a requirement.
+const AWAY_FROM_HOME: &str = "Optional, to use it away from home: install Tailscale \
+     (https://tailscale.com/download) on this computer and your phone, sign in to the same \
+     account on both, then run `consistent-world remote setup` once.";
+
+pub(crate) fn machine_token(cfg: &AppConfig, config_path: &str) -> Option<String> {
     if let Ok(t) = std::env::var("GATEWAY_AUTH_TOKEN")
         && !t.trim().is_empty()
     {
@@ -81,11 +86,13 @@ pub async fn run(cfg: &AppConfig, config_path: &str) -> anyhow::Result<()> {
     }
     let offer: Value = resp.json().await?;
     let Some(url) = offer["url"].as_str() else {
-        anyhow::bail!(
-            "Your phone has no way to reach this computer yet. Install Tailscale on both \
-             (https://tailscale.com/download), sign in, run `consistent-world remote setup`, \
-             then run this again."
-        );
+        if offer["wifiAvailable"] == true {
+            anyhow::bail!(
+                "Couldn't find your Wi-Fi network. Make sure this computer is connected to \
+                 Wi-Fi, then run `consistent-world pair` again.\n\n{AWAY_FROM_HOME}"
+            );
+        }
+        anyhow::bail!("Your phone can't reach this computer yet.\n\n{AWAY_FROM_HOME}");
     };
 
     let qr = qrcode::QrCode::new(offer["payload"].to_string().as_bytes())?;
@@ -99,8 +106,10 @@ pub async fn run(cfg: &AppConfig, config_path: &str) -> anyhow::Result<()> {
     println!("The code works once, for 90 seconds. Address: {url}");
     if offer["via"] == "lan" {
         println!(
-            "(Same Wi-Fi only. Run `consistent-world remote setup` to reach it from anywhere.)"
+            "Your phone needs to be on the same Wi-Fi as this computer. If this computer \
+             asks whether to allow incoming connections, choose Allow."
         );
+        println!("\n{AWAY_FROM_HOME}");
     }
     println!("\nWaiting for your phone…");
 

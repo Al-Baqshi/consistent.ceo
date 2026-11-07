@@ -249,6 +249,8 @@ struct EntityUpsertBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     preferred_model_tier: Option<String>,
     allowed_agent_groups: Vec<String>,
+    #[serde(default)]
+    browser_sites: Vec<String>,
     setup: crate::state::EntitySetup,
     readiness: crate::state::EntityReadiness,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -295,6 +297,7 @@ fn entity_to_upsert_body(entity: &Entity) -> EntityUpsertBody {
         memory_scope: entity.memory_scope.clone(),
         preferred_model_tier: entity.preferred_model_tier.clone(),
         allowed_agent_groups: entity.allowed_agent_groups.clone(),
+        browser_sites: entity.browser_sites.clone(),
         setup: entity.setup.clone(),
         readiness: entity.readiness.clone(),
         entity_runtime: entity.entity_runtime.clone(),
@@ -344,6 +347,7 @@ fn entity_field_completeness_guard(entity: &Entity) {
         memory_scope: _,
         preferred_model_tier: _,
         allowed_agent_groups: _,
+        browser_sites: _,
         setup: _,
         readiness: _,
         entity_runtime: _,

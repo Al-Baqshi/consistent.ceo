@@ -30,14 +30,22 @@
 //! match the phone in their hand. An attacker who somehow read the code would
 //! show a different six digits (they derive from the attacker's key).
 //!
+//! # How the phone reaches the computer
+//!
+//! The main listener stays on loopback. A phone arrives one of three ways, in
+//! order of preference: the relay, Tailscale Serve (both reach the gateway
+//! *from* loopback and work from anywhere), or phone access on Wi-Fi — a
+//! guarded second listener on this computer's home-network address
+//! (`wifi_access.rs`). Making a code with neither of the first two available
+//! switches Wi-Fi access on, so pairing at home needs nothing installed.
+//!
 //! # Why the transport is not restricted
 //!
-//! The gateway listens on loopback only. Every phone request arrives through
-//! Tailscale Serve or the relay, both of which reach it *from* loopback, so a
-//! "same Wi-Fi only" rule would refuse every pairing on a default install.
 //! The screen code and the approval are the proof of presence; the network
 //! path is not. The relay can carry pairing traffic but cannot forge it: every
-//! phone step is signed by a key the relay never sees.
+//! phone step is signed by a key the relay never sees. The machine token,
+//! which stands for the owner here, is refused on every path that is not this
+//! machine (relay and Wi-Fi alike; see `server::require_bearer_token`).
 //!
 //! # State
 //!
@@ -437,6 +445,7 @@ pub fn protected_routes(state: ServerState) -> Router {
         .route("/api/pair/requests", get(list_requests))
         .route("/api/pair/requests/{id}/approve", post(approve))
         .route("/api/pair/requests/{id}/deny", post(deny))
+        .route("/api/remote/wifi", get(wifi_status).put(set_wifi))
         .with_state(state)
 }
 
@@ -481,6 +490,9 @@ struct OfferResponse {
     url: Option<String>,
     /// Which path `url` is: `relay`, `tailnet`, or `lan`.
     via: Option<&'static str>,
+    /// Whether this gateway can offer phone access on Wi-Fi at all. With no
+    /// `url` and this true, the computer simply has no Wi-Fi address now.
+    wifi_available: bool,
     /// The exact JSON the QR encodes.
     payload: serde_json::Value,
     /// The QR as an SVG document, ready to inline.
@@ -518,11 +530,24 @@ async fn create_offer(
         .as_ref()
         .map(|c| (c.gateway_port, c.gateway_bind.clone()))
         .unwrap_or((18800, "127.0.0.1".to_string()));
+    // Already on: the laptop may have moved networks since the last check.
+    crate::wifi_access::refresh();
     // Shells out to the tailscale CLI; keep it off the async workers.
-    let status =
+    let mut status =
         tokio::task::spawn_blocking(move || crate::remote_doctor::remote_status(port, &bind))
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Nothing reaches this computer yet (no relay, no tailnet, Wi-Fi access
+    // off): switch phone access on Wi-Fi on, so pairing at home just works.
+    // Only the instance admin may open the gateway to the network.
+    if status.recommended_url.is_none()
+        && crate::server::is_instance_admin(&ctx, crate::server::gateway_is_self_hosted(&state))
+        && let Some(addr) = crate::wifi_access::enable()
+    {
+        let url = format!("http://{addr}");
+        status.lan_url = Some(url.clone());
+        status.recommended_url = Some(url);
+    }
     let via = if status.relay_url.is_some() {
         Some("relay")
     } else if status.serve_url.is_some() {
@@ -543,9 +568,59 @@ async fn create_offer(
         expires_at,
         url: status.recommended_url,
         via,
+        wifi_available: crate::wifi_access::is_available(),
         payload,
         qr_svg: qr,
     }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WifiStatus {
+    /// False when this gateway cannot offer it (bound to the network already,
+    /// or no auth token).
+    available: bool,
+    /// The owner's choice, remembered across restarts.
+    enabled: bool,
+    /// Where a phone on the same Wi-Fi reaches it right now.
+    url: Option<String>,
+}
+
+fn wifi_status_now() -> WifiStatus {
+    WifiStatus {
+        available: crate::wifi_access::is_available(),
+        enabled: crate::wifi_access::is_enabled(),
+        url: crate::wifi_access::listening_addr().map(|a| format!("http://{a}")),
+    }
+}
+
+async fn wifi_status() -> Json<WifiStatus> {
+    crate::wifi_access::refresh();
+    Json(wifi_status_now())
+}
+
+#[derive(Deserialize)]
+struct SetWifiRequest {
+    enabled: bool,
+}
+
+/// Switch phone access on Wi-Fi on or off. Opening the gateway to the home
+/// network is an instance-wide decision, so only the instance admin makes it.
+async fn set_wifi(
+    State(state): State<ServerState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(body): Json<SetWifiRequest>,
+) -> Result<Json<WifiStatus>, StatusCode> {
+    crate::control_api::require_instance_admin(&ctx, &state)?;
+    if !crate::wifi_access::is_available() {
+        return Err(StatusCode::CONFLICT);
+    }
+    if body.enabled {
+        crate::wifi_access::enable();
+    } else {
+        crate::wifi_access::disable();
+    }
+    Ok(Json(wifi_status_now()))
 }
 
 async fn list_requests(

@@ -26,8 +26,10 @@
 //! **What is not** — measured, not guessed, and each pinned by a `known_hole_*` test:
 //! * **WebSocket handshakes.** The `Fetch` domain does not pause them and CDP has no verb to
 //!   refuse one, so `new WebSocket("ws://denied/")` reaches the network unchecked.
-//! * **Popups.** `window.open` creates a separate CDP target with its own session; its first
-//!   navigation is not checked. The tool never *drives* popups, but a hostile page can open one.
+//! * **Popups from cross-origin frames in their own process.** Main-frame popups are stopped:
+//!   a guard script removes `window.open` and rewrites new-window links and forms, and any tab
+//!   the page still manages to open is closed after the action. A frame that lives in a
+//!   separate renderer (only when site isolation is on) is outside that script's reach.
 //! * **Service workers.** Registration never completes here (chromiumoxide detaches from
 //!   `service_worker` targets), so an SW never gets far enough to make a request — unverified
 //!   rather than proven safe.
@@ -44,6 +46,7 @@ use chromiumoxide::cdp::browser_protocol::fetch::{
     FailRequestParams, RequestPattern,
 };
 use chromiumoxide::cdp::browser_protocol::network::ErrorReason;
+use chromiumoxide::cdp::browser_protocol::target::{CloseTargetParams, GetTargetsParams};
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::element::Element;
 use chromiumoxide::page::{Page, ScreenshotParams};
@@ -78,6 +81,19 @@ const INTERCEPT_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// separately when it overflows), so a page that fires hundreds of denied requests cannot flood
 /// the model's context.
 const MAX_BLOCKED_REPORTED: usize = 25;
+
+/// Runs in every new document (main frame and iframes) before the page's own scripts. A popup is
+/// a brand-new CDP target whose first request would never pass through the interception armed on
+/// the page's session, so the tool does not let one open: `window.open` does nothing, and a link
+/// or form aimed at a new window is turned into a same-tab navigation, which *is* intercepted.
+/// Targets that name an existing frame are left alone.
+const POPUP_GUARD_JS: &str = r#"(() => {
+  try { Object.defineProperty(window, 'open', { value: () => null, writable: false, configurable: false }); } catch (_) {}
+  const own = (t) => !t || /^_(self|top|parent)$/i.test(t) || (window.frames && window.frames[t] !== undefined);
+  const fix = (el) => { if (el && el.getAttribute && !own(el.getAttribute('target'))) el.setAttribute('target', '_self'); };
+  document.addEventListener('click', (e) => { const a = e.target && e.target.closest && e.target.closest('a[target],area[target]'); fix(a); }, true);
+  document.addEventListener('submit', (e) => fix(e.target), true);
+})();"#;
 
 /// Monotonic suffix so two screenshots taken in the same nanosecond cannot collide.
 static SCREENSHOT_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -206,6 +222,9 @@ impl Interceptor {
 /// A live browser plus the page the model is currently working on.
 struct BrowserSession {
     browser: Browser,
+    /// True when this tool launched the browser. False when it attached to one that belongs to
+    /// someone else, which must never be closed from here: only the tab this tool opened is ours.
+    owned: bool,
     /// Pumps the CDP event stream; nothing works if this task is not running.
     handler: JoinHandle<()>,
     page: Option<Page>,
@@ -221,7 +240,17 @@ impl BrowserSession {
         if let Some(intercept) = self.intercept.take() {
             intercept.abort();
         }
-        self.page = None;
+        let page = self.page.take();
+        if !self.owned {
+            // Attached to a browser that is not ours (the signed-in Consistent browser): close the
+            // one tab this tool opened and leave the browser, and everything open in it, alone.
+            if let Some(page) = page {
+                let _ = time::timeout(HEALTH_TIMEOUT, page.close()).await;
+            }
+            self.handler.abort();
+            return;
+        }
+        drop(page);
         let closed = matches!(
             time::timeout(HEALTH_TIMEOUT, self.browser.close()).await,
             Ok(Ok(_))
@@ -262,6 +291,12 @@ pub struct BrowserTool {
     pub denied_domains: Vec<String>,
     /// Where screenshots are written. Defaults to the system temp dir.
     pub screenshot_dir: Option<String>,
+    /// Whether the `evaluate` action (arbitrary JavaScript in the page) is offered. On by default
+    /// when this tool launched its own throwaway browser; **off by default when it is attached
+    /// to someone else's browser** (`cdp_url` set), because that browser holds signed-in
+    /// sessions and a script could read what the page can read, tokens included.
+    /// `CONSISTENT_WORLD_BROWSER_ALLOW_EVALUATE=1` turns it back on.
+    pub allow_evaluate: bool,
     session: Mutex<Option<BrowserSession>>,
     /// Live policy + blocked-request record, shared with the interception task.
     interceptor: Arc<Interceptor>,
@@ -279,12 +314,16 @@ impl BrowserTool {
         let headless = env_non_empty("CONSISTENT_WORLD_BROWSER_HEADLESS")
             .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no"))
             .unwrap_or(true);
+        let allow_evaluate = env_non_empty("CONSISTENT_WORLD_BROWSER_ALLOW_EVALUATE")
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(cdp_url.is_none());
         Self {
             cdp_url,
             headless,
             allowed_domains,
             denied_domains,
             screenshot_dir: None,
+            allow_evaluate,
             session: Mutex::new(None),
             interceptor: Arc::new(Interceptor::default()),
         }
@@ -393,6 +432,7 @@ impl BrowserTool {
 
         Ok(BrowserSession {
             browser,
+            owned: self.cdp_url.is_none(),
             handler,
             page: None,
             intercept: None,
@@ -412,7 +452,12 @@ impl BrowserTool {
         if let Some(old) = session.intercept.take() {
             old.abort();
         }
-        session.page = None;
+        if let Some(old) = session.page.take()
+            && !session.owned
+        {
+            // In someone else's browser a dropped handle would leave its tab open for good.
+            let _ = time::timeout(HEALTH_TIMEOUT, old.close()).await;
+        }
 
         let page = session.browser.new_page("about:blank").await.map_err(|e| {
             (
@@ -421,6 +466,14 @@ impl BrowserTool {
             )
         })?;
         let intercept = arm_interception(&page, self.interceptor.clone()).await?;
+        page.evaluate_on_new_document(POPUP_GUARD_JS)
+            .await
+            .map_err(|e| {
+                (
+                    "BROWSER_INTERCEPT_FAILED",
+                    format!("could not install the popup guard: {e}"),
+                )
+            })?;
         session.intercept = Some(intercept);
         Ok(page)
     }
@@ -563,6 +616,37 @@ async fn arm_interception(
     }
 
     Ok(task)
+}
+
+/// Close any tab our page managed to open anyway (the guard script cannot cover everything, for
+/// instance a cross-origin frame in its own process). Only tabs whose opener is *our* page are
+/// touched, because in an attached browser the person's own tabs live alongside ours.
+async fn close_popups(session: &mut BrowserSession) {
+    let Some(ours) = session.page.as_ref().map(|p| p.target_id().clone()) else {
+        return;
+    };
+    // A raw `Target.getTargets`, not `Browser::fetch_targets`: the latter rebuilds
+    // chromiumoxide's own target table and leaves every `Page` handle we hold disconnected.
+    let Ok(Ok(response)) = time::timeout(
+        HEALTH_TIMEOUT,
+        session.browser.execute(GetTargetsParams::default()),
+    )
+    .await
+    else {
+        return;
+    };
+    for target in response.result.target_infos {
+        if target.r#type == "page" && target.opener_id.as_ref() == Some(&ours) {
+            tracing::debug!(url = %target.url, "closing a popup opened by the page");
+            let _ = time::timeout(
+                HEALTH_TIMEOUT,
+                session
+                    .browser
+                    .execute(CloseTargetParams::new(target.target_id.clone())),
+            )
+            .await;
+        }
+    }
 }
 
 async fn browser_alive(browser: &Browser) -> bool {
@@ -824,6 +908,16 @@ impl BrowserTool {
                 "title": page_title(&page).await,
                 "load_event": settled,
             }));
+        }
+
+        if action == Action::Evaluate && !self.allow_evaluate {
+            return Err((
+                "BROWSER_EVALUATE_DISABLED",
+                "the `evaluate` action is off in this browser: it is signed in to real accounts, and \
+                 a script could read what the page can read. Use `text`, `click`, `type` and \
+                 `screenshot` instead."
+                    .to_string(),
+            ));
         }
 
         // Every remaining action needs the current page. `execute` has already guaranteed a
@@ -1110,6 +1204,13 @@ impl Tool for BrowserTool {
             self.run_action(&mut slot, action, &arguments, policy.as_ref(), deadline),
         )
         .await;
+
+        // A page that opened a window anyway loses it before anything can use it.
+        if action != Action::Close
+            && let Some(session) = slot.as_mut()
+        {
+            close_popups(session).await;
+        }
 
         // Report what the policy stopped, on success *and* on failure — a `wait_for` that times
         // out because the script that would have created the element was blocked is precisely
@@ -2089,18 +2190,14 @@ mod tests {
         let _ = t.execute(json!({ "action": "close" })).await;
     }
 
-    /// KNOWN HOLE, recorded deliberately rather than left as folklore.
-    ///
-    /// `window.open` creates a brand-new CDP target with its own session. Interception is armed
-    /// on the page's own session, so the popup's first navigation is never checked. The tool
-    /// itself never drives popups (there is exactly one *current page*), so this is not reachable
-    /// by the model — but it is reachable by a hostile page, and it is an exfiltration channel.
-    /// Chrome 150 ignores `--block-new-web-contents`; that was measured, not assumed.
-    ///
-    /// If this test starts failing, the hole has been closed — delete it and update the docs.
+    /// `window.open` makes a brand-new CDP target with its own session, so its first request would
+    /// never pass through the interception armed on the page's session. This used to be a
+    /// recorded hole (`known_hole_popup_windows_escape_the_policy`); the tool now installs a
+    /// guard in every document that stops the popup being created, and sweeps up any that
+    /// appear anyway. The page below tries three ways to open one; none may reach the server.
     #[tokio::test]
     #[ignore = "requires a real Chrome/Chromium installation"]
-    async fn known_hole_popup_windows_escape_the_policy() {
+    async fn popup_windows_cannot_escape_the_policy() {
         let server = FixtureServer::start(|port| {
             vec![
                 (
@@ -2108,14 +2205,19 @@ mod tests {
                     "text/html",
                     format!(
                         r#"<!doctype html><title>Opener</title>
-                           <script>window.open("http://localhost:{port}/popup.html");</script>"#
+                           <a id="l" href="http://localhost:{port}/via-link.html" target="_blank">go</a>
+                           <script>
+                             window.open("http://localhost:{port}/via-open.html");
+                             document.getElementById("l").click();
+                             const f = document.createElement("form");
+                             f.action = "http://localhost:{port}/via-form.html"; f.target = "_blank";
+                             document.body.appendChild(f); f.submit();
+                           </script>"#
                     ),
                 ),
-                (
-                    "/popup.html",
-                    "text/html",
-                    "<!doctype html><title>POPUP</title>".to_string(),
-                ),
+                ("/via-open.html", "text/html", "<title>POPUP</title>".to_string()),
+                ("/via-link.html", "text/html", "<title>POPUP</title>".to_string()),
+                ("/via-form.html", "text/html", "<title>POPUP</title>".to_string()),
             ]
         })
         .await;
@@ -2132,13 +2234,16 @@ mod tests {
             .unwrap();
         assert!(!res.is_error, "navigate failed: {}", res.output);
         time::sleep(Duration::from_millis(1500)).await;
+        // A later action runs the sweep for anything that got through.
+        let _ = t.execute(json!({ "action": "text" })).await;
 
-        assert!(
-            server.saw("/popup.html"),
-            "popups appear to be covered now; remove this known-hole test. hits: {:?}",
-            server.hit_log()
-        );
-        eprintln!("KNOWN HOLE confirmed: popup hits {:?}", server.hit_log());
+        for popup in ["/via-open.html", "/via-link.html", "/via-form.html"] {
+            assert!(
+                !server.saw(popup),
+                "{popup} reached the server through a popup. hits: {:?}",
+                server.hit_log()
+            );
+        }
         let _ = t.execute(json!({ "action": "close" })).await;
     }
 
@@ -2304,5 +2409,160 @@ mod tests {
         assert_eq!(parse_output(&res)["title"], "Browser Tool Fixture");
 
         let _ = t.execute(json!({ "action": "close" })).await;
+    }
+
+    // ── Attached to a browser that belongs to someone else ───────────────────────────────────
+
+    /// A Chrome a test started. Killed and reaped when dropped, so a test that fails halfway does
+    /// not leave a browser running.
+    struct TestChrome(std::process::Child);
+
+    impl Drop for TestChrome {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Start a real Chrome the way the Consistent browser is started, on `profile`, and return it
+    /// with its debugging endpoint.
+    async fn start_chrome(profile: &std::path::Path) -> (TestChrome, String) {
+        let exe = crate::chrome::find_chrome().expect("a Chrome is installed");
+        crate::chrome::brand_new_profile(profile);
+        crate::chrome::clear_devtools_endpoint(profile);
+        let child = std::process::Command::new(exe)
+            .args(crate::chrome::launch_args(profile, true))
+            .arg("--no-sandbox")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("launch chrome");
+        let child = TestChrome(child);
+        for _ in 0..200 {
+            if let Some(endpoint) = crate::chrome::devtools_endpoint(profile)
+                && crate::chrome::endpoint_alive(&endpoint).await
+            {
+                return (child, endpoint);
+            }
+            time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("Chrome never published a debugging port");
+    }
+
+    async fn wait_until_gone(endpoint: &str) {
+        for _ in 0..100 {
+            if !crate::chrome::endpoint_alive(endpoint).await {
+                return;
+            }
+            time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("Chrome did not exit");
+    }
+
+    /// The reason the managed browser can be shared at all: ending a task closes the one tab the
+    /// task opened, and nothing else. Before this, `close` (and a dropped tool) sent
+    /// `Browser.close` to a browser that held the person's signed-in sessions.
+    #[tokio::test]
+    #[ignore = "requires a real Chrome/Chromium installation"]
+    async fn attaching_never_closes_the_browser_and_turns_javascript_off() {
+        let server = FixtureServer::start(|_| {
+            vec![("/page.html", "text/html", "<title>Hello</title><p>hi</p>".to_string())]
+        })
+        .await;
+        let profile = tempfile::tempdir().unwrap();
+        let (mut child, endpoint) = start_chrome(profile.path()).await;
+
+        let t = BrowserTool::new(Some(endpoint.clone()), None, vec!["localhost".to_string()]);
+        assert!(!t.allow_evaluate, "attached browsers default to no evaluate");
+        let nav = t
+            .execute(json!({
+                "action": "navigate",
+                "url": format!("http://127.0.0.1:{}/page.html", server.port),
+                "timeout_secs": 60
+            }))
+            .await
+            .unwrap();
+        assert!(!nav.is_error, "navigate failed: {}", nav.output);
+        let tabs = crate::chrome::open_tabs(&endpoint).await;
+        assert!(tabs.iter().any(|t| t.url.contains("/page.html")), "our tab is open: {tabs:?}");
+
+        let eval = t
+            .execute(json!({ "action": "evaluate", "script": "document.cookie" }))
+            .await
+            .unwrap();
+        assert!(eval.is_error);
+        assert!(eval.output.contains("BROWSER_EVALUATE_DISABLED"), "{}", eval.output);
+
+        let closed = t.execute(json!({ "action": "close" })).await.unwrap();
+        assert!(!closed.is_error, "{}", closed.output);
+        time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            crate::chrome::endpoint_alive(&endpoint).await,
+            "closing the tool must not close someone else's browser"
+        );
+        let tabs = crate::chrome::open_tabs(&endpoint).await;
+        assert!(!tabs.iter().any(|t| t.url.contains("/page.html")), "our tab is closed: {tabs:?}");
+
+        crate::chrome::close_browser(&endpoint).await.expect("polite close");
+        wait_until_gone(&endpoint).await;
+        let _ = child.0.wait();
+    }
+
+    /// The point of the Consistent browser: sign in once, close it, open it again later, and the
+    /// agent's page is still signed in. The "site" below is a page that sets a login cookie and a
+    /// page that tells you whether it sees one; the browser is really closed and relaunched in
+    /// between, on the same profile.
+    #[tokio::test]
+    #[ignore = "requires a real Chrome/Chromium installation"]
+    async fn a_login_survives_closing_and_reopening_the_browser() {
+        let server = FixtureServer::start(|_| {
+            vec![
+                (
+                    "/login.html",
+                    "text/html",
+                    "<title>Login</title><script>document.cookie='session=abc123; max-age=86400; path=/';</script><p>signed in</p>".to_string(),
+                ),
+                (
+                    "/account.html",
+                    "text/html",
+                    "<title>Account</title><p id=\"who\"></p><script>document.getElementById('who').textContent = document.cookie.includes('session=abc123') ? 'WELCOME BACK' : 'PLEASE SIGN IN';</script>".to_string(),
+                ),
+            ]
+        })
+        .await;
+        let profile = tempfile::tempdir().unwrap();
+        let base = format!("http://127.0.0.1:{}", server.port);
+
+        // First window: the person signs in.
+        let (mut first, endpoint) = start_chrome(profile.path()).await;
+        let person = BrowserTool::new(Some(endpoint.clone()), None, vec![]);
+        let nav = person
+            .execute(json!({ "action": "navigate", "url": format!("{base}/login.html"), "timeout_secs": 60 }))
+            .await
+            .unwrap();
+        assert!(!nav.is_error, "{}", nav.output);
+        let _ = person.execute(json!({ "action": "close" })).await;
+        crate::chrome::close_browser(&endpoint).await.expect("polite close");
+        wait_until_gone(&endpoint).await;
+        let _ = first.0.wait();
+
+        // Later: a new window on the same profile, and the agent attaches to it.
+        let (mut second, endpoint) = start_chrome(profile.path()).await;
+        let agent = BrowserTool::new(Some(endpoint.clone()), None, vec![]);
+        let nav = agent
+            .execute(json!({ "action": "navigate", "url": format!("{base}/account.html"), "timeout_secs": 60 }))
+            .await
+            .unwrap();
+        assert!(!nav.is_error, "{}", nav.output);
+        let text = agent.execute(json!({ "action": "text" })).await.unwrap();
+        assert!(
+            text.output.contains("WELCOME BACK"),
+            "the login did not survive the restart: {}",
+            text.output
+        );
+        let _ = agent.execute(json!({ "action": "close" })).await;
+        crate::chrome::close_browser(&endpoint).await.expect("polite close");
+        wait_until_gone(&endpoint).await;
+        let _ = second.0.wait();
     }
 }

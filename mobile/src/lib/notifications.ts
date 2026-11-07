@@ -77,6 +77,32 @@ Notifications.setNotificationHandler({
   },
 });
 
+/**
+ * Reminders the phone has scheduled as local notifications (`reminders.ts`).
+ * The feed poll skips its banner for these — the local one already rang.
+ */
+const localReminderIds = new Set<string>();
+
+export function setLocalReminderIds(ids: Iterable<string>): void {
+  localReminderIds.clear();
+  for (const id of ids) localReminderIds.add(id);
+}
+
+export function isLocalReminder(id: string | undefined): boolean {
+  return !!id && localReminderIds.has(id);
+}
+
+export const REMINDER_CATEGORY = 'reminder';
+
+/** A notification about a reminder: our local ones and the gateway's pushes. */
+export function isReminderNotification(content: {
+  categoryIdentifier?: string | null;
+  data?: unknown;
+}): boolean {
+  const data = (content.data ?? {}) as Record<string, unknown>;
+  return content.categoryIdentifier === REMINDER_CATEGORY || data.kind === 'reminder';
+}
+
 export async function ensureNotificationPermission(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
   try {
@@ -98,19 +124,21 @@ interface NotifyOptions {
    * gateway's remote pushes.
    */
   data?: Record<string, unknown>;
+  /** Action buttons, e.g. `REMINDER_CATEGORY` (Done / Snooze / Tomorrow). */
+  categoryIdentifier?: string;
 }
 
 /** Schedule a local notification (with default sound unless disabled). */
 export async function notify(
   title: string,
   body: string,
-  { seconds = 2, sound = true, data }: NotifyOptions = {},
+  { seconds = 2, sound = true, data, categoryIdentifier }: NotifyOptions = {},
 ): Promise<string | null> {
   try {
     const granted = await ensureNotificationPermission();
     if (!granted) return null;
     return await Notifications.scheduleNotificationAsync({
-      content: { title, body, sound: sound ? 'default' : undefined, data },
+      content: { title, body, sound: sound ? 'default' : undefined, data, categoryIdentifier },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
         seconds: Math.max(1, seconds),
@@ -141,7 +169,13 @@ export async function sendTestNotification(): Promise<string | null> {
 
 export async function cancelAllHeartbeats(): Promise<void> {
   try {
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    // Reminder nudges (`rem:` ids) are not heartbeats — they must survive this.
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    await Promise.all(
+      scheduled
+        .filter((n) => !n.identifier.startsWith('rem:'))
+        .map((n) => Notifications.cancelScheduledNotificationAsync(n.identifier)),
+    );
   } catch {
     /* no-op */
   }

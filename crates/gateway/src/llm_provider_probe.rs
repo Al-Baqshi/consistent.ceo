@@ -69,34 +69,126 @@ pub async fn fetch_model_ids(
             }
         }
         Ok(ids)
+    } else if is_anthropic_base(base) {
+        // Anthropic: GET {base}/models with `x-api-key`, not a bearer token.
+        let resp = client
+            .get(models_url(base))
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        ids_from(resp, "data", "id").await
+    } else if is_google_native_base(base) {
+        // Gemini's native API: GET {base}/models?key=…, names are `models/<id>`.
+        let resp = client
+            .get(format!("{base}/models"))
+            .query(&[("key", api_key)])
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let ids = ids_from(resp, "models", "name").await?;
+        Ok(ids
+            .into_iter()
+            .map(|n| n.trim_start_matches("models/").to_string())
+            .collect())
     } else {
-        // OpenAI-compatible: GET /v1/models (bearer auth), extract data[].id.
-        let url = format!("{base}/v1/models");
-        let mut req = client.get(url);
+        // OpenAI-compatible: GET {base}/models (bearer auth), extract data[].id.
+        let mut req = client.get(models_url(base));
         if !api_key.is_empty() {
             req = req.bearer_auth(api_key);
         }
         let resp = req.send().await.map_err(|e| e.to_string())?;
-        let status = resp.status();
-        let text = resp.text().await.map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                truncate_body(&text, 240)
-            ));
-        }
-        let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        let data = v["data"]
-            .as_array()
-            .ok_or_else(|| "unexpected OpenAI-style /v1/models shape".to_string())?;
-        let mut ids = Vec::new();
-        for m in data {
-            if let Some(id) = m["id"].as_str() {
-                ids.push(id.to_string());
-            }
-        }
-        Ok(ids)
+        ids_from(resp, "data", "id").await
+    }
+}
+
+/// The model-list URL for an OpenAI-style base. Every hosted base the product
+/// ships already ends in a version segment (`…/v1`, `…/v1beta/openai`), so the
+/// list lives directly under it; only a bare host (`http://localhost:8000`)
+/// gets `/v1` added. Appending `/v1/models` unconditionally produced
+/// `/v1/v1/models`, a 404 that made every API-key save fail.
+pub fn models_url(base: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let versioned = base.rsplit('/').take(2).any(|seg| {
+        seg.len() >= 2 && seg.starts_with('v') && seg[1..2].chars().all(|c| c.is_ascii_digit())
+    });
+    if versioned {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
+}
+
+/// True for Anthropic's API, which authenticates with `x-api-key`.
+pub fn is_anthropic_base(base: &str) -> bool {
+    base.to_ascii_lowercase().contains("anthropic.com")
+}
+
+/// True for Gemini's native endpoint (not its `/openai` compatibility layer).
+pub fn is_google_native_base(base: &str) -> bool {
+    let b = base.to_ascii_lowercase();
+    b.contains("generativelanguage.googleapis.com") && !b.trim_end_matches('/').ends_with("/openai")
+}
+
+// Reads a JSON list response and pulls `field` out of each entry of `list`.
+async fn ids_from(resp: reqwest::Response, list: &str, field: &str) -> Result<Vec<String>, String> {
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            truncate_body(&text, 240)
+        ));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let entries = v[list]
+        .as_array()
+        .ok_or_else(|| format!("unexpected model list shape (no `{list}` array)"))?;
+    Ok(entries
+        .iter()
+        .filter_map(|m| m[field].as_str().map(str::to_string))
+        .collect())
+}
+
+#[cfg(test)]
+mod models_url_tests {
+    use super::*;
+
+    #[test]
+    fn versioned_bases_do_not_double_v1() {
+        assert_eq!(
+            models_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.deepseek.com/v1/"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://generativelanguage.googleapis.com/v1beta/openai"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        );
+        assert_eq!(
+            models_url("http://localhost:8000"),
+            "http://localhost:8000/v1/models"
+        );
+        assert_eq!(
+            models_url("https://openrouter.ai/api"),
+            "https://openrouter.ai/api/v1/models"
+        );
+    }
+
+    #[test]
+    fn provider_shapes() {
+        assert!(is_anthropic_base("https://api.anthropic.com/v1"));
+        assert!(is_google_native_base(
+            "https://generativelanguage.googleapis.com/v1beta"
+        ));
+        assert!(!is_google_native_base(
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        ));
     }
 }
 

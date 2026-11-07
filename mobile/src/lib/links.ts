@@ -19,11 +19,14 @@ export async function openExternal(url: string): Promise<void> {
 }
 
 /**
- * How a computer address will be reached, for the gentle "is this safe beyond
- * your Wi-Fi?" note. Plain `http://` to a home-network address is fine at home
- * but sends the sign-in token and vault traffic unencrypted, so anything other
- * than the phone itself, Tailscale (100.64.0.0/10, `*.ts.net`) or https gets a
- * nudge towards Tailscale or the relay.
+ * A calm word about how this phone reaches the computer, or null when there is
+ * nothing worth saying.
+ *
+ * The everyday setup is the computer and the phone on the same home Wi-Fi,
+ * over plain `http://` to a private address. That is how pairing works out of
+ * the box, so it gets a reassuring line, never a nudge to install anything.
+ * Only plain `http://` to a public address — which really does cross the open
+ * internet unencrypted — gets a gentle note.
  */
 export function plainHttpNote(url: string): string | null {
   const m = /^http:\/\/([^/:?#]+|\[[^\]]+\])/i.exec(url.trim());
@@ -33,7 +36,8 @@ export function plainHttpNote(url: string): string | null {
   if (host.endsWith('.ts.net')) return null;
   const v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
   if (v4 && Number(v4[1]) === 100 && Number(v4[2]) >= 64 && Number(v4[2]) <= 127) return null;
-  return 'This address isn’t encrypted. That’s fine on your home Wi-Fi, but to use the app anywhere else, connect through Tailscale or the relay in Consistent CEO on your computer.';
+  if (isLocalNetworkUrl(url)) return 'Connected over your home Wi-Fi.';
+  return 'This address isn’t encrypted, so it’s best used only on networks you trust.';
 }
 
 /** True for addresses on the local network, where iOS asks for Local Network access. */

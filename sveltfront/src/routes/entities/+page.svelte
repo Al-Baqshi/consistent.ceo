@@ -16,7 +16,7 @@
   };
 
   type EntityReadiness = { percent: number; label: string; nextQuestion?: string; missingFields?: string[] };
-  type EntitySetup = { whatItIs?: string; primaryGoal?: string; successCriteria?: string; primaryDomain?: string; primaryEmail?: string; repoPath?: string; backendStack?: string; frontendStack?: string; databaseStack?: string };
+  type EntitySetup = { whatItIs?: string; primaryGoal?: string; successCriteria?: string; primaryDomain?: string; primaryEmail?: string; repoPath?: string; repoUrl?: string; websiteUrl?: string; backendStack?: string; frontendStack?: string; databaseStack?: string };
 
   type Entity = {
     id: string;

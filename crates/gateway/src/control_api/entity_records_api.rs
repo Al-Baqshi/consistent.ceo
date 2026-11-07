@@ -654,7 +654,7 @@ pub(super) async fn create_entity_connection_session(
             None => {
                 status = "config_required".to_string();
                 provider_message = Some(
-                    "Set CONSISTENT_WORLD_GITHUB_CLIENT_ID to enable GitHub's permission flow."
+                    "Browser sign-in to GitHub isn't set up on this computer. Use your GitHub CLI login or paste a token instead."
                         .to_string(),
                 );
             }

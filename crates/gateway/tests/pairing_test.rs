@@ -15,6 +15,7 @@ use http_body_util::BodyExt;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tower::util::ServiceExt;
 
 use consistent_world_gateway::auth_store::AuthStore;
@@ -23,11 +24,12 @@ use consistent_world_gateway::pairing::{
 };
 use consistent_world_gateway::server;
 use consistent_world_gateway::state::ServerState;
+use consistent_world_gateway::wifi_access;
 use consistent_world_memory::store::{MemoryStore, SurrealMemoryStore};
 
 const STATIC_TOKEN: &str = "static-token";
 
-async fn build_app(bind: &str) -> axum::Router {
+async fn build_state(bind: &str) -> ServerState {
     let memory: Arc<dyn MemoryStore> =
         Arc::new(SurrealMemoryStore::connect_memory().await.unwrap());
     let db = surrealdb::engine::any::connect("memory").await.unwrap();
@@ -38,11 +40,24 @@ async fn build_app(bind: &str) -> axum::Router {
         gateway_bind: bind.to_string(),
         ..Default::default()
     });
-    server::build_router(
-        ServerState::new("test".into(), Some(STATIC_TOKEN.into()), memory)
-            .with_auth_store(auth)
-            .with_app_config(config),
-    )
+    ServerState::new("test".into(), Some(STATIC_TOKEN.into()), memory)
+        .with_auth_store(auth)
+        .with_app_config(config)
+}
+
+async fn build_app(bind: &str) -> axum::Router {
+    server::build_router(build_state(bind).await)
+}
+
+/// The same gateway seen two ways: from this computer (the loopback router)
+/// and from the home Wi-Fi (the router the Wi-Fi listener serves), plus the
+/// switch that turns Wi-Fi access on and off.
+async fn build_local_and_wifi() -> (axum::Router, axum::Router, Arc<AtomicBool>) {
+    let state = build_state("127.0.0.1").await;
+    let local = server::build_router(state.clone());
+    let on = Arc::new(AtomicBool::new(true));
+    let wifi = wifi_access::wifi_router(local.clone(), state, on.clone());
+    (local, wifi, on)
 }
 
 async fn call(
@@ -92,6 +107,17 @@ impl Phone {
 
 /// Scan, enroll, allow on the computer, collect. Returns (session, device id).
 async fn pair(app: &axum::Router, computer: &str, phone: &Phone) -> (String, String) {
+    pair_via(app, app, computer, phone).await
+}
+
+/// [`pair`], with the computer's calls on `desk` and the phone's on `net`.
+async fn pair_via(
+    desk: &axum::Router,
+    net: &axum::Router,
+    computer: &str,
+    phone: &Phone,
+) -> (String, String) {
+    let app = desk;
     let (status, offer) = call(app, "POST", "/api/pair/offer", Some(computer), None).await;
     assert_eq!(status, StatusCode::OK, "offer: {offer}");
     let nonce = offer["nonce"].as_str().unwrap().to_string();
@@ -100,7 +126,7 @@ async fn pair(app: &axum::Router, computer: &str, phone: &Phone) -> (String, Str
 
     let pk = phone.public_key();
     let (status, enrolled) = call(
-        app,
+        net,
         "POST",
         "/api/pair/enroll",
         None,
@@ -121,12 +147,18 @@ async fn pair(app: &axum::Router, computer: &str, phone: &Phone) -> (String, Str
     // The computer sees the same six digits.
     let (status, pending) = call(app, "GET", "/api/pair/requests", Some(computer), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(pending[0]["code"], code.as_str());
-    assert_eq!(pending[0]["label"], "Test iPhone");
+    // The pairing service is process-wide and these tests run in parallel,
+    // so find this phone's request rather than assuming it is the only one.
+    let mine = pending
+        .as_array()
+        .and_then(|all| all.iter().find(|r| r["requestId"] == request_id.as_str()))
+        .unwrap_or_else(|| panic!("request {request_id} not pending: {pending}"));
+    assert_eq!(mine["code"], code.as_str());
+    assert_eq!(mine["label"], "Test iPhone");
 
     let collect = json!({ "signature": phone.sign(&collect_message(&request_id)) });
     let uri = format!("/api/pair/requests/{request_id}/collect");
-    let (status, waiting) = call(app, "POST", &uri, None, Some(collect.clone())).await;
+    let (status, waiting) = call(net, "POST", &uri, None, Some(collect.clone())).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(waiting["status"], "pending");
 
@@ -140,7 +172,7 @@ async fn pair(app: &axum::Router, computer: &str, phone: &Phone) -> (String, Str
     .await;
     assert_eq!(status, StatusCode::OK, "approve: {approved}");
 
-    let (status, got) = call(app, "POST", &uri, None, Some(collect)).await;
+    let (status, got) = call(net, "POST", &uri, None, Some(collect)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["status"], "approved");
     (
@@ -273,4 +305,103 @@ async fn the_machine_token_cannot_pair_on_a_network_bound_gateway() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = call(&app, "POST", "/api/pair/offer", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_phone_pairs_and_signs_in_over_wifi() {
+    let (local, wifi, _on) = build_local_and_wifi().await;
+    let phone = Phone::new();
+    // The owner makes the code and presses Allow on this computer; every
+    // phone step crosses the Wi-Fi listener.
+    let (session, device_id) = pair_via(&local, &wifi, STATIC_TOKEN, &phone).await;
+    let (status, me) = call(&wifi, "GET", "/api/auth/me", Some(&session), None).await;
+    assert_eq!(status, StatusCode::OK, "me over Wi-Fi: {me}");
+    let (status, again) = device_login(&wifi, &phone, &device_id).await;
+    assert_eq!(status, StatusCode::OK, "device login over Wi-Fi: {again}");
+}
+
+#[tokio::test]
+async fn the_machine_token_is_refused_over_wifi() {
+    let (local, wifi, _on) = build_local_and_wifi().await;
+    // On this computer the machine token is the owner...
+    let (status, _) = call(&local, "POST", "/api/pair/offer", Some(STATIC_TOKEN), None).await;
+    assert_eq!(status, StatusCode::OK);
+    // ...from the Wi-Fi it is nobody: no pairing codes, no owner session.
+    for (method, uri) in [
+        ("POST", "/api/pair/offer"),
+        ("GET", "/api/pair/requests"),
+        ("POST", "/api/auth/local-session"),
+        ("GET", "/api/auth/me"),
+        ("PUT", "/api/remote/wifi"),
+    ] {
+        let (status, _) = call(&wifi, method, uri, Some(STATIC_TOKEN), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri} over Wi-Fi");
+    }
+    // The scoped `<secret>.<workspace>.<principal>` form is refused as well.
+    let scoped = format!("{STATIC_TOKEN}.default.bearer");
+    let (status, _) = call(&wifi, "GET", "/api/auth/me", Some(&scoped), None).await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn nobody_signs_up_over_wifi() {
+    let (local, wifi, _on) = build_local_and_wifi().await;
+    let body = json!({ "username": "stranger", "password": "correct horse battery" });
+    let (status, _) = call(
+        &wifi,
+        "POST",
+        "/api/auth/register",
+        None,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = call(
+        &wifi,
+        "POST",
+        "/api/auth/check-username",
+        None,
+        Some(json!({ "username": "stranger" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // On this computer, sign-up is unchanged.
+    let (status, _) = call(&local, "POST", "/api/auth/register", None, Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn switching_wifi_access_off_stops_answering_at_once() {
+    let (local, wifi, on) = build_local_and_wifi().await;
+    let phone = Phone::new();
+    let (session, _) = pair_via(&local, &wifi, STATIC_TOKEN, &phone).await;
+    on.store(false, Ordering::SeqCst);
+    // Even a connection that was already open gets nothing more.
+    let (status, _) = call(&wifi, "GET", "/api/auth/me", Some(&session), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    // This computer is unaffected.
+    let (status, _) = call(&local, "GET", "/api/auth/me", Some(&session), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn wifi_status_reports_unavailable_without_a_listener() {
+    // Tests never install the listener: the switch says so and stays off.
+    let app = build_app("127.0.0.1").await;
+    let (status, wifi) = call(&app, "GET", "/api/remote/wifi", Some(STATIC_TOKEN), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(wifi["available"], false);
+    assert_eq!(wifi["enabled"], false);
+    assert_eq!(wifi["url"], Value::Null);
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/remote/wifi",
+        Some(STATIC_TOKEN),
+        Some(json!({ "enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (_, offer) = call(&app, "POST", "/api/pair/offer", Some(STATIC_TOKEN), None).await;
+    assert_eq!(offer["wifiAvailable"], false);
 }

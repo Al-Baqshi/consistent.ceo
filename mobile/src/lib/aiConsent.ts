@@ -1,5 +1,6 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
+
+import { kvGet, kvRemove, kvSet } from './db';
 
 /**
  * Consent to send chat and voice to AI (App Review 5.1.2(i)).
@@ -9,10 +10,11 @@ import { create } from 'zustand';
  * about…" composer and both voice entry points await `ensure()` from
  * `useAiConsentGate` first. The answer is revocable from Settings → Privacy.
  *
- * Stored in AsyncStorage rather than the Keychain (`prefs.ts`) on purpose:
- * AsyncStorage is wiped when the app is deleted, Keychain items are not, so a
- * reinstall asks again instead of inheriting a yes the person may not remember
- * giving. Only a yes is persisted; "Not now" lasts until the next attempt.
+ * Stored in SQLite rather than AsyncStorage so the phone can query it without
+ * the gateway. SQLite lives in the app's documents folder and is wiped when
+ * the app is deleted — a reinstall asks again instead of inheriting a yes the
+ * person may not remember giving. Only a yes is persisted; "Not now" lasts
+ * until the next attempt.
  */
 
 export const PREF_AI_CONSENT = 'cw.pref.aiConsent.v1';
@@ -31,7 +33,7 @@ export const useAiConsentStore = create<ConsentStore>((set, get) => ({
     if (known !== null) return known;
     let granted = false;
     try {
-      granted = (await AsyncStorage.getItem(PREF_AI_CONSENT)) === '1';
+      granted = (await kvGet(PREF_AI_CONSENT)) === '1';
     } catch {
       granted = false;
     }
@@ -41,8 +43,8 @@ export const useAiConsentStore = create<ConsentStore>((set, get) => ({
   async set(granted) {
     set({ granted });
     try {
-      if (granted) await AsyncStorage.setItem(PREF_AI_CONSENT, '1');
-      else await AsyncStorage.removeItem(PREF_AI_CONSENT);
+      if (granted) await kvSet(PREF_AI_CONSENT, '1');
+      else await kvRemove(PREF_AI_CONSENT);
     } catch {
       /* best-effort: the in-memory answer still gates this session */
     }

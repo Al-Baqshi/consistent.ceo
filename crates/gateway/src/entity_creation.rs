@@ -542,6 +542,7 @@ pub async fn complete_creation(
         memory_scope: None,
         preferred_model_tier: None,
         allowed_agent_groups: vec![],
+        browser_sites: vec![],
         local_path: Some(normalized_local_path),
         setup,
         readiness: EntityReadiness::default(),

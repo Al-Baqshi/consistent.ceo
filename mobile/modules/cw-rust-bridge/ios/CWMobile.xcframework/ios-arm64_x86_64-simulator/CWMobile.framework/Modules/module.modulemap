@@ -1,0 +1,4 @@
+framework module CWMobile {
+  umbrella header "cw_mobile.h"
+  export *
+}

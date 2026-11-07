@@ -597,3 +597,74 @@ export interface GatewayFeedEvent {
   detail?: string;
   approvalId?: string;
 }
+
+// ── Reminders (`/api/reminders`, camelCase) ────────────────────────────
+
+export type ReminderKind = 'reminder' | 'task' | 'note';
+export type ReminderState = 'scheduled' | 'due' | 'parked' | 'delegated' | 'done' | 'cancelled';
+
+/** Mirrors the gateway's `ReminderView`. Times are RFC3339. */
+export interface ReminderView {
+  id: string;
+  title: string;
+  what: string;
+  kind: ReminderKind;
+  entityId: string | null;
+  entityName: string | null;
+  state: ReminderState;
+  /** The next nudge. */
+  fireAt: string | null;
+  /** Nudges planned after `fireAt` if nothing is done about it. */
+  followUps: string[];
+  firstFiredAt: string | null;
+  nudges: number;
+  createdAt: string;
+  /** "Do it for me": the computer task (and its approval) this was handed to. */
+  delegatedTaskId?: string | null;
+  delegatedApprovalId?: string | null;
+}
+
+export interface ReminderList {
+  items: ReminderView[];
+  serverTime: string;
+  /** False when the demo fixtures answered instead of a computer. */
+  live: boolean;
+}
+
+export interface CreateReminderInput {
+  what: string;
+  /** One captured sentence; the gateway splits out the time when `what` is empty. */
+  text?: string;
+  /** Natural language, resolved by the gateway ("tomorrow 9am"). */
+  when?: string;
+  inMinutes?: number;
+  fireAt?: string;
+  entityId?: string;
+  /** Idempotency key — reuse it on retry. */
+  clientId?: string;
+  followUp?: boolean;
+}
+
+export type ReminderAction = 'done' | 'cancel' | 'snooze' | 'reschedule' | 'reopen' | 'delegate';
+
+export interface ReminderActionInput {
+  action: ReminderAction;
+  minutes?: number;
+  when?: string;
+  fireAt?: string;
+  /** `delegate` only: extra detail for the computer agent. */
+  instruction?: string;
+}
+
+/** `GET /api/local-model` — the on-device model this gateway recommends. */
+export interface LocalModelManifest {
+  name: string;
+  ollama?: { model: string; approxBytes: number };
+  mobile: {
+    file: string;
+    url: string;
+    approxBytes: number;
+    minRamGb: number;
+    format: string;
+  };
+}

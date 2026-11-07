@@ -210,6 +210,29 @@ impl Tool for CreateEntityTool {
     }
 }
 
+/// Reminder metadata for a task or note given a follow-up time; `None` when
+/// no time was asked for or it can't be resolved. Returns (metadata, due).
+fn remind_metadata(
+    when: Option<&str>,
+    in_minutes: Option<f64>,
+    tz: Option<i32>,
+) -> Option<(Value, String)> {
+    let now = Utc::now();
+    let due = in_minutes
+        .filter(|m| m.is_finite() && *m >= 0.0 && *m <= 366.0 * 24.0 * 60.0)
+        .map(|m| now + chrono::Duration::seconds((m * 60.0).round() as i64))
+        .or_else(|| {
+            when.map(str::trim)
+                .filter(|w| !w.is_empty())
+                .and_then(|w| crate::reminders::parse_when_in_timezone(w, now, tz))
+        })?;
+    let mut meta = crate::reminders::schedule_metadata(due, tz);
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert(crate::reminders::REMIND_KEY.into(), json!(true));
+    }
+    Some((meta, due.to_rfc3339()))
+}
+
 /// Tool: save a note as a task with kind "note".
 #[derive(Clone)]
 pub struct CreateNoteTool {
@@ -217,6 +240,7 @@ pub struct CreateNoteTool {
     pub workspace_id: Arc<str>,
     pub entity_id: Option<Arc<str>>,
     pub principal_id: Arc<str>,
+    pub timezone_offset_minutes: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -225,6 +249,12 @@ struct CreateNoteArgs {
     content: String,
     #[serde(default)]
     title: Option<String>,
+    /// Models say `when` naturally (set_reminder uses it); the older
+    /// `remind_when` / `due` spellings are still accepted.
+    #[serde(default, alias = "remind_when", alias = "due", alias = "due_at")]
+    when: Option<String>,
+    #[serde(default, alias = "remind_in_minutes")]
+    in_minutes: Option<f64>,
 }
 
 #[async_trait]
@@ -233,14 +263,16 @@ impl Tool for CreateNoteTool {
         "create_note"
     }
     fn description(&self) -> &'static str {
-        "Save a note in the user's workspace. Use ONLY when the user explicitly asks to write down, capture, save, or remember something. Do NOT call this for normal chat or questions."
+        "Save a note in the user's workspace. Use ONLY when the user explicitly asks to write down, capture, save, or remember something. Do NOT call this for normal chat or questions. If the note is something they need to do, set when so it gets followed up."
     }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
                 "content": { "type": "string", "description": "The full note text to save." },
-                "title": { "type": "string", "description": "Optional short title; if omitted, derived from content." }
+                "title": { "type": "string", "description": "Optional short title; if omitted, derived from content." },
+                "when": { "type": "string", "description": "When to follow up, if the note is something the user must do (e.g. 'send ABT the photo'). Natural language like 'tomorrow at 9am'. Use 'tomorrow 9am' when they gave no time. Omit for pure ideas or facts." },
+                "in_minutes": { "type": "number", "description": "Follow-up time as minutes from now, when the user's phrasing is relative." }
             },
             "required": ["content"]
         })
@@ -249,6 +281,8 @@ impl Tool for CreateNoteTool {
         let args: CreateNoteArgs = serde_json::from_value(arguments).unwrap_or(CreateNoteArgs {
             content: String::new(),
             title: None,
+            when: None,
+            in_minutes: None,
         });
         let body = args.content.trim();
         if body.is_empty() {
@@ -267,6 +301,11 @@ impl Tool for CreateNoteTool {
             .map(str::to_string)
             .unwrap_or_else(|| body.chars().take(80).collect());
 
+        let remind = remind_metadata(
+            args.when.as_deref(),
+            args.in_minutes,
+            self.timezone_offset_minutes,
+        );
         let req = CreateTaskRequest {
             title,
             dept: Some("General".to_string()),
@@ -282,13 +321,13 @@ impl Tool for CreateNoteTool {
             connection_id: None,
             external_source: None,
             external_id: None,
-            metadata: None,
-            due_at: None,
+            metadata: remind.as_ref().map(|r| r.0.clone()),
+            due_at: remind.as_ref().map(|r| r.1.clone()),
         };
         match internal_create_task(&self.control, &self.workspace_id, Some(&self.principal_id), req).await {
             Ok(task) => Ok(ToolResult {
                 call_id: String::new(),
-                output: json!({ "ok": true, "id": task.id, "kind": "note" }).to_string(),
+                output: json!({ "ok": true, "id": task.id, "kind": "note", "remind_at": task.due_at }).to_string(),
                 is_error: false,
             }),
             Err(status) => Ok(ToolResult {
@@ -416,6 +455,7 @@ pub struct CreateTaskTool {
     pub workspace_id: Arc<str>,
     pub entity_id: Option<Arc<str>>,
     pub principal_id: Arc<str>,
+    pub timezone_offset_minutes: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -427,6 +467,12 @@ struct CreateTaskArgs {
     priority: Option<String>,
     #[serde(default)]
     dept: Option<String>,
+    /// Models say `when` naturally (set_reminder uses it); the older
+    /// `remind_when` / `due` spellings are still accepted.
+    #[serde(default, alias = "remind_when", alias = "due", alias = "due_at")]
+    when: Option<String>,
+    #[serde(default, alias = "remind_in_minutes")]
+    in_minutes: Option<f64>,
 }
 
 #[async_trait]
@@ -444,7 +490,9 @@ impl Tool for CreateTaskTool {
                 "title":    { "type": "string", "description": "Short imperative title, e.g. 'Draft landing page copy'." },
                 "content":  { "type": "string", "description": "Optional longer description / acceptance criteria." },
                 "priority": { "type": "string", "enum": ["low","normal","high","urgent"], "description": "Optional priority." },
-                "dept":     { "type": "string", "description": "Optional department, e.g. 'Engineering', 'Marketing'. Defaults to General." }
+                "dept":     { "type": "string", "description": "Optional department, e.g. 'Engineering', 'Marketing'. Defaults to General." },
+                "when": { "type": "string", "description": "When to remind the user about this task, e.g. 'tomorrow at 9am', 'friday 2pm'. Use 'tomorrow 9am' if they gave no time. Consistent follows up until it is done." },
+                "in_minutes": { "type": "number", "description": "Reminder time as minutes from now, when the user's phrasing is relative." }
             },
             "required": ["title"]
         })
@@ -461,6 +509,11 @@ impl Tool for CreateTaskTool {
                 });
             }
         };
+        let remind = remind_metadata(
+            args.when.as_deref(),
+            args.in_minutes,
+            self.timezone_offset_minutes,
+        );
         let req = CreateTaskRequest {
             title: args.title.trim().to_string(),
             dept: args.dept.or_else(|| Some("General".to_string())),
@@ -476,13 +529,13 @@ impl Tool for CreateTaskTool {
             connection_id: None,
             external_source: None,
             external_id: None,
-            metadata: None,
-            due_at: None,
+            metadata: remind.as_ref().map(|r| r.0.clone()),
+            due_at: remind.as_ref().map(|r| r.1.clone()),
         };
         match internal_create_task(&self.control, &self.workspace_id, Some(&self.principal_id), req).await {
             Ok(task) => Ok(ToolResult {
                 call_id: String::new(),
-                output: json!({ "ok": true, "id": task.id, "kind": "task", "title": task.title })
+                output: json!({ "ok": true, "id": task.id, "kind": "task", "title": task.title, "remind_at": task.due_at })
                     .to_string(),
                 is_error: false,
             }),
@@ -626,48 +679,19 @@ impl Tool for RunOnMyComputerTool {
             Some("browser") => "browser",
             _ => "general",
         };
-        let title: String = {
-            let first = instruction
-                .lines()
-                .next()
-                .unwrap_or("Machine action")
-                .trim();
-            first.chars().take(120).collect()
-        };
-        let req = CreateTaskRequest {
-            title,
-            dept: Some("General".to_string()),
-            roles: None,
-            entity_id: Some(entity_id.clone()),
-            mission_id: None,
-            priority: None,
-            // The whole safety story: the task is executor-shaped but stands
-            // at the approval gate until the operator says go.
-            requires_human_approval: Some(true),
-            task_kind: Some("machine_action".to_string()),
-            content: None,
-            director_id: None,
-            agent_id: None,
-            connection_id: None,
-            external_source: None,
-            external_id: None,
-            metadata: Some(json!({
-                crate::task_executor::META_EXECUTABLE: true,
-                crate::task_executor::META_DESCRIPTION: instruction,
-                "source": "chat",
-                "actionKind": action_kind,
-            })),
-            due_at: None,
-        };
-        let task = match internal_create_task_queued(
+        let (task_id, task_title, approval_id) = match queue_machine_action(
             &self.control,
             &self.workspace_id,
-            Some(&self.principal_id),
-            req,
+            &self.principal_id,
+            &entity_id,
+            &instruction,
+            action_kind,
+            "chat",
+            None,
         )
         .await
         {
-            Ok(t) => t,
+            Ok(v) => v,
             Err(status) => {
                 return Ok(ToolResult {
                     call_id: String::new(),
@@ -677,36 +701,90 @@ impl Tool for RunOnMyComputerTool {
                 });
             }
         };
-        let now = Utc::now().to_rfc3339();
-        let approval = ApprovalRequest {
-            id: Uuid::new_v4().to_string(),
-            created_at: now.clone(),
-            updated_at: now,
-            entity_id,
-            connection_id: None,
-            task_id: Some(task.id.clone()),
-            action: "run_on_computer".to_string(),
-            status: ApprovalStatus::Pending,
-            detail: Some(instruction.clone()),
-            created_by: Some(self.principal_id.to_string()),
-        };
-        let approval_id = approval.id.clone();
-        self.control.enqueue_approval_request(approval).await;
         Ok(ToolResult {
             call_id: String::new(),
             output: json!({
                 "ok": true,
                 "kind": "action_request",
-                "taskId": task.id,
+                "taskId": task_id,
                 "approvalId": approval_id,
                 "actionKind": action_kind,
                 "status": "awaiting_approval",
-                "title": task.title,
+                "title": task_title,
             })
             .to_string(),
             is_error: false,
         })
     }
+}
+
+/// Queue an approval-gated action on the owner's computer: an executable
+/// task the unattended executor picks up once approved, plus the approval
+/// request. Shared by `run_on_computer` and a reminder's "Do it for me".
+/// Returns (task id, task title, approval id).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn queue_machine_action(
+    control: &ControlState,
+    workspace_id: &str,
+    principal_id: &str,
+    entity_id: &str,
+    instruction: &str,
+    action_kind: &str,
+    source: &str,
+    reminder_id: Option<&str>,
+) -> Result<(String, String, String), axum::http::StatusCode> {
+    let title: String = instruction
+        .lines()
+        .next()
+        .unwrap_or("Machine action")
+        .trim()
+        .chars()
+        .take(120)
+        .collect();
+    let mut metadata = json!({
+        crate::task_executor::META_EXECUTABLE: true,
+        crate::task_executor::META_DESCRIPTION: instruction,
+        "source": source,
+        "actionKind": action_kind,
+    });
+    if let Some(rid) = reminder_id {
+        metadata["reminderId"] = json!(rid);
+    }
+    let req = CreateTaskRequest {
+        title,
+        dept: Some("General".to_string()),
+        roles: None,
+        entity_id: Some(entity_id.to_string()),
+        mission_id: None,
+        priority: None,
+        requires_human_approval: Some(true),
+        task_kind: Some("machine_action".to_string()),
+        content: None,
+        director_id: None,
+        agent_id: None,
+        connection_id: None,
+        external_source: None,
+        external_id: None,
+        metadata: Some(metadata),
+        due_at: None,
+    };
+    let task = internal_create_task_queued(control, workspace_id, Some(principal_id), req).await?;
+    let now = Utc::now().to_rfc3339();
+    let approval = ApprovalRequest {
+        id: Uuid::new_v4().to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        entity_id: entity_id.to_string(),
+        connection_id: None,
+        task_id: Some(task.id.clone()),
+        action: "run_on_computer".to_string(),
+        status: ApprovalStatus::Pending,
+        detail: Some(instruction.to_string()),
+        created_by: Some(principal_id.to_string()),
+    };
+    let approval_id = approval.id.clone();
+    control.enqueue_approval_request(approval).await;
+    Ok((task.id, task.title, approval_id))
 }
 
 /// Turn a stated goal into a mission plus a real, dated plan. Without this the
@@ -930,13 +1008,46 @@ struct CreateReminderArgs {
     in_minutes: Option<f64>,
 }
 
+impl CreateReminderTool {
+    /// The open reminder in this chat's scope with the same text, rescheduled
+    /// to `due`; `None` when there is no such reminder.
+    async fn move_existing(
+        &self,
+        what: &str,
+        due: chrono::DateTime<Utc>,
+    ) -> Option<crate::state::Task> {
+        let key = crate::reminders::normalize_what(what);
+        if key.is_empty() {
+            return None;
+        }
+        let entity = self.entity_id.as_deref()?;
+        let moved = {
+            let mut tasks = self.control.tasks.write().await;
+            let t = tasks.iter_mut().find(|t| {
+                t.entity_id.as_deref() == Some(entity)
+                    && crate::reminders::is_reminder_like(t)
+                    && !matches!(
+                        crate::reminders::reminder_state(t),
+                        crate::reminders::ReminderState::Done
+                            | crate::reminders::ReminderState::Cancelled
+                    )
+                    && crate::reminders::normalize_what(&crate::reminders::reminder_what(t)) == key
+            })?;
+            crate::reminders::reschedule(t, due, self.timezone_offset_minutes);
+            t.clone()
+        };
+        self.control.persist_task_row(&moved).await;
+        Some(moved)
+    }
+}
+
 #[async_trait]
 impl Tool for CreateReminderTool {
     fn name(&self) -> &'static str {
         "set_reminder"
     }
     fn description(&self) -> &'static str {
-        "Set a reminder for the user. Use when the user asks to be reminded, nudged, or pinged about something. Pass the natural-language 'when' verbatim AND, when the user gave a relative time (e.g. 'in 20 minutes', 'in 2 hours'), also pass in_minutes with the resolved number of minutes."
+        "Set a reminder for the user. Use when the user asks to be reminded, nudged, or pinged about something, or mentions something they must do at a time. Pass the natural-language 'when' verbatim AND, when the user gave a relative time (e.g. 'in 20 minutes', 'in 2 hours'), also pass in_minutes with the resolved number of minutes. Consistent follows up automatically until the user marks it done."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -980,12 +1091,26 @@ impl Tool for CreateReminderTool {
                     crate::reminders::parse_when_in_timezone(w, now, self.timezone_offset_minutes)
                 })
             });
-        let metadata = due_at.map(|d| {
-            json!({
-                crate::reminders::REMINDER_DUE_AT_KEY: d.to_rfc3339(),
-                crate::reminders::REMINDER_FIRED_KEY: false,
-            })
-        });
+        // Asking again about something already open ("remind me about the
+        // dentist tomorrow") moves that reminder instead of making a twin.
+        if let Some(due) = due_at
+            && let Some(moved) = self.move_existing(args.what.trim(), due).await
+        {
+            return Ok(ToolResult {
+                call_id: String::new(),
+                output: json!({
+                    "ok": true,
+                    "id": moved.id,
+                    "kind": "reminder",
+                    "fires_at": due.to_rfc3339(),
+                    "note": "this was already an open reminder; moved it to the new time instead of adding a duplicate",
+                })
+                .to_string(),
+                is_error: false,
+            });
+        }
+        let metadata =
+            due_at.map(|d| crate::reminders::schedule_metadata(d, self.timezone_offset_minutes));
         let scheduled_at = due_at.map(|d| d.to_rfc3339());
         let req = CreateTaskRequest {
             title,
@@ -1435,16 +1560,13 @@ impl Tool for UpdateTaskTool {
                         // snooze | reschedule — `due` is resolved above.
                         let due = due.clone().unwrap_or_default();
                         task.due_at = Some(due.clone());
-                        if task.task_kind.as_deref() == Some("reminder") {
-                            crate::state::task_meta_set_str(
+                        if crate::reminders::is_reminder_like(task)
+                            && let Ok(at) = chrono::DateTime::parse_from_rfc3339(&due)
+                        {
+                            crate::reminders::reschedule(
                                 task,
-                                crate::reminders::REMINDER_DUE_AT_KEY,
-                                &due,
-                            );
-                            crate::state::task_meta_set_str(
-                                task,
-                                crate::reminders::REMINDER_FIRED_KEY,
-                                "false",
+                                at.with_timezone(&Utc),
+                                self.timezone_offset_minutes,
                             );
                         }
                         if task.status == TaskStatus::Completed {
@@ -1460,6 +1582,9 @@ impl Tool for UpdateTaskTool {
         let Some((before, task)) = updated else {
             return Ok(tool_err("task changed while it was being updated; retry"));
         };
+        if crate::reminders::is_reminder_like(&task) {
+            crate::training::record_outcome(&task, &action, "chat_tool");
+        }
         self.control.persist_task_row(&task).await;
         Ok(tool_ok(
             json!({"ok":true,"id":task.id,"kind":"task_update","title":task.title,"before_status":before,"status":task.status,"due_at":task.due_at}),
@@ -1947,6 +2072,7 @@ pub fn build_workspace_tools(
             workspace_id: ws.clone(),
             entity_id: eid.clone(),
             principal_id: pid.clone(),
+            timezone_offset_minutes,
         }),
         Box::new(RecordLessonTool {
             state: state.clone(),
@@ -1959,6 +2085,7 @@ pub fn build_workspace_tools(
             workspace_id: ws.clone(),
             entity_id: eid.clone(),
             principal_id: pid.clone(),
+            timezone_offset_minutes,
         }),
         Box::new(CreateMissionTool {
             state: state.clone(),
@@ -2303,6 +2430,50 @@ mod tests {
         let state = ServerState::new("test".into(), None, memory)
             .with_director_lessons_store(lessons.clone());
         (state, lessons)
+    }
+
+    #[tokio::test]
+    async fn asking_twice_moves_the_reminder_instead_of_duplicating_it() {
+        let control = Arc::new(ControlState::new("openai", "https://x", "m"));
+        control.entities.write().await.push(crate::state::Entity {
+            id: "ent_me".into(),
+            name: "Personal".into(),
+            workspace_id: Some("default".into()),
+            ..Default::default()
+        });
+        let tool = CreateReminderTool {
+            control: control.clone(),
+            workspace_id: Arc::from("default"),
+            entity_id: Some(Arc::from("ent_me")),
+            principal_id: Arc::from("user_1"),
+            timezone_offset_minutes: Some(0),
+        };
+        let first = tool
+            .execute(json!({ "what": "call the dentist", "in_minutes": 30 }))
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.output);
+        let again = tool
+            .execute(json!({ "what": "Call the dentist.", "when": "tomorrow at 9am" }))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&again.output).unwrap();
+        assert!(
+            out["note"]
+                .as_str()
+                .unwrap()
+                .contains("instead of adding a duplicate")
+        );
+        let tasks = control.tasks.read().await;
+        let reminders: Vec<_> = tasks
+            .iter()
+            .filter(|t| t.task_kind.as_deref() == Some("reminder"))
+            .collect();
+        assert_eq!(reminders.len(), 1, "one reminder, moved");
+        assert!(
+            reminders[0].due_at.as_deref().unwrap() > Utc::now().to_rfc3339().as_str(),
+            "moved to the later time"
+        );
     }
 
     #[tokio::test]

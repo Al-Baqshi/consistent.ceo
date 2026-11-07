@@ -186,6 +186,7 @@ pub(super) async fn ingest_entity_source(
                 None
             }
         }),
+        repo_url: (context.kind == "github_repo").then(|| context.url.clone()),
         backend_stack: non_empty_string(narrative.backend_stack.clone()),
         frontend_stack: non_empty_string(narrative.frontend_stack.clone()),
         database_stack: non_empty_string(narrative.database_stack.clone()),

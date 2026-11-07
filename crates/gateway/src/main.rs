@@ -10,12 +10,14 @@ mod activity;
 mod agent_cli_probe;
 mod agent_review;
 mod agent_sessions;
+mod ai_brain;
 mod alerts;
 mod architect_bindings;
 mod auth_api;
 mod auth_store;
 mod backup;
 mod billing;
+mod browser_manager;
 mod canvas_api;
 mod canvas_store;
 mod capture;
@@ -23,6 +25,7 @@ mod capture_chat_pipeline;
 mod capture_routing;
 mod chat_agent;
 mod chat_tools;
+mod cli_client;
 mod config;
 mod control_api;
 mod control_snapshot_store;
@@ -96,6 +99,7 @@ mod supervisor;
 mod task_executor;
 mod task_store;
 mod tenant_store;
+mod training;
 mod user_profile;
 mod vault_api;
 mod vault_manager;
@@ -105,6 +109,7 @@ mod verification_actions;
 mod voice;
 mod voice_pod;
 mod webhooks;
+mod wifi_access;
 mod wizard;
 
 use anyhow::Context;
@@ -357,6 +362,112 @@ enum CliCommand {
     Pair,
     /// Serve the browser tool over MCP on stdio (used by browser-kind tasks)
     McpBrowser,
+    /// Talk to the running gateway: with a message, one turn; without, an
+    /// interactive session. Piped stdin works as the message.
+    Chat {
+        /// What to say (several words are joined)
+        message: Vec<String>,
+        /// Scope the conversation to one entity (id or name)
+        #[arg(short, long)]
+        entity: Option<String>,
+        /// Print the raw NDJSON event stream
+        #[arg(long)]
+        json: bool,
+    },
+    /// Is the gateway up, and what is it doing
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List tasks
+    Tasks {
+        /// backlog, queued, in-progress, failed, completed, cancelled
+        #[arg(short, long)]
+        status: Option<String>,
+        #[arg(short, long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List entities (businesses, projects, people)
+    Entities {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List approvals waiting for you
+    Approvals {
+        /// Include resolved ones
+        #[arg(short, long)]
+        all: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Approve a waiting request (an id prefix is enough)
+    Approve { id: String },
+    /// Reject a waiting request (an id prefix is enough)
+    Reject { id: String },
+    /// Build fine-tuning data for the local model (see training/README.md)
+    Training {
+        #[command(subcommand)]
+        cmd: TrainingCmd,
+    },
+}
+
+/// `consistent-world training <cmd>` — render prompts with the production
+/// builders so training data matches what the model sees at runtime.
+#[derive(Subcommand, Debug)]
+enum TrainingCmd {
+    /// Write the seed directors and live chat tool schemas as JSON
+    Context {
+        #[arg(short, long, default_value = "training/data/context.json")]
+        out: String,
+    },
+    /// Render heartbeat scenarios (JSONL) into exact beat prompts (JSONL)
+    RenderBeats {
+        #[arg(short, long)]
+        input: String,
+        #[arg(short, long)]
+        out: String,
+    },
+    /// Render chat scenarios (JSONL) into exact chat prompts + tools (JSONL)
+    RenderChats {
+        #[arg(short, long)]
+        input: String,
+        #[arg(short, long)]
+        out: String,
+    },
+    /// Print where recorded traces go and whether recording is on
+    Traces,
+}
+
+async fn run_training_command(cmd: &TrainingCmd) -> anyhow::Result<()> {
+    match cmd {
+        TrainingCmd::Context { out } => {
+            training::export_context(out).await?;
+            println!("wrote {out}");
+        }
+        TrainingCmd::RenderBeats { input, out } => {
+            let n = training::render_beats_file(input, out)?;
+            println!("rendered {n} beat prompts -> {out}");
+        }
+        TrainingCmd::RenderChats { input, out } => {
+            let n = training::render_chats_file(input, out).await?;
+            println!("rendered {n} chat prompts -> {out}");
+        }
+        TrainingCmd::Traces => {
+            println!("dir: {}", training::traces_dir().display());
+            println!(
+                "recording: {} (set {}=1 before starting the gateway)",
+                if training::traces_enabled() {
+                    "on"
+                } else {
+                    "off"
+                },
+                training::TRACE_ENV
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `consistent-world remote <cmd>` — Tailscale-based reachability from outside
@@ -646,6 +757,46 @@ async fn check_configured_brain(cfg: &config::AppConfig) {
     eprintln!();
 }
 
+/// The terminal-client subcommands: each is one call (or one chat) against the
+/// gateway that is already running, never a second gateway.
+async fn run_client_command(
+    command: Option<&CliCommand>,
+    cfg: &config::AppConfig,
+    config_path: &str,
+) -> anyhow::Result<()> {
+    let client = cli_client::Client::connect(cfg, config_path)?;
+    match command {
+        Some(CliCommand::Chat {
+            message,
+            entity,
+            json,
+        }) => {
+            cli_client::chat(
+                &client,
+                message.clone(),
+                cli_client::ChatOpts {
+                    entity: entity.clone(),
+                    as_json: *json,
+                },
+            )
+            .await
+        }
+        Some(CliCommand::Status { json }) => cli_client::status(&client, *json).await,
+        Some(CliCommand::Tasks {
+            status,
+            limit,
+            json,
+        }) => cli_client::tasks(&client, status.clone(), *limit, *json).await,
+        Some(CliCommand::Entities { json }) => cli_client::entities(&client, *json).await,
+        Some(CliCommand::Approvals { all, json }) => {
+            cli_client::approvals(&client, *all, *json).await
+        }
+        Some(CliCommand::Approve { id }) => cli_client::resolve_approval(&client, id, true).await,
+        Some(CliCommand::Reject { id }) => cli_client::resolve_approval(&client, id, false).await,
+        _ => Ok(()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = dotenv();
@@ -692,11 +843,24 @@ async fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        Some(CliCommand::Remote { .. }) | Some(CliCommand::Pair) | Some(CliCommand::McpBrowser) => {
-            false
-        }
+        Some(CliCommand::Remote { .. })
+        | Some(CliCommand::Pair)
+        | Some(CliCommand::McpBrowser)
+        | Some(CliCommand::Chat { .. })
+        | Some(CliCommand::Status { .. })
+        | Some(CliCommand::Tasks { .. })
+        | Some(CliCommand::Entities { .. })
+        | Some(CliCommand::Approvals { .. })
+        | Some(CliCommand::Approve { .. })
+        | Some(CliCommand::Reject { .. })
+        | Some(CliCommand::Training { .. }) => false,
         None => false,
     };
+
+    // Offline tooling: needs no config, database, or running gateway.
+    if let Some(CliCommand::Training { cmd }) = &cli.command {
+        return run_training_command(cmd).await;
+    }
 
     // Stdio MCP server: no config, no database, no server. It is spawned as a
     // child of a `claude` CLI run and speaks JSON-RPC on stdin/stdout, so it
@@ -740,6 +904,21 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(CliCommand::Pair) => {
             if let Err(e) = pair_cli::run(&cfg, &config_path).await {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        Some(
+            CliCommand::Chat { .. }
+            | CliCommand::Status { .. }
+            | CliCommand::Tasks { .. }
+            | CliCommand::Entities { .. }
+            | CliCommand::Approvals { .. }
+            | CliCommand::Approve { .. }
+            | CliCommand::Reject { .. },
+        ) => {
+            if let Err(e) = run_client_command(cli.command.as_ref(), &cfg, &config_path).await {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
@@ -985,6 +1164,17 @@ async fn main() -> anyhow::Result<()> {
         consistent_world_common::telemetry::CostTracker::default(),
     ));
     let control_state_path = config::expand_tilde_path("~/.consistent-world/control_state.json");
+    // The AI the owner picked (ai.json beside the state file) and a running
+    // look at what this computer can think with — before any loop can make a
+    // call, so the first heartbeat already lands on a lane that works.
+    {
+        let state_dir = Path::new(&control_state_path)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        ai_brain::init(state_dir);
+        ai_brain::spawn_refresher(ai_brain::ollama_base(&cfg));
+    }
     let control_snapshot_store =
         control_snapshot_store::SurrealControlSnapshotStore::new(db.clone());
     // Boot order: Surreal snapshot (survives container redeploys) → local
@@ -1076,6 +1266,14 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => {
                 warn!(error = %e, "default heartbeat backfill failed; entities keep their current beats")
             }
+        }
+        if let Err(e) = entity_heartbeat_defaults::ensure_open_loops_beats(
+            heartbeat_persister.as_ref(),
+            &entities,
+        )
+        .await
+        {
+            warn!(error = %e, "open-loops check-in provisioning failed");
         }
     }
     control_state.load_agents_seed_if_empty().await;
@@ -1613,7 +1811,10 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move { check_configured_brain(&cfg).await });
     }
 
-    let router = server::build_router_with_webhooks(server_state, webhook_store);
+    let router = server::build_router_with_webhooks(server_state.clone(), webhook_store);
+    // Phone access on Wi-Fi: a guarded second listener on this computer's
+    // home-network address, off until the owner pairs a phone (wifi_access.rs).
+    wifi_access::install(router.clone(), server_state, &config_path);
     let shutdown_sessions = session_manager.clone();
     let control_state_final = control_state;
     let control_state_path_final = control_state_path;

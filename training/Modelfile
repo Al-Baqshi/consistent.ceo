@@ -1,0 +1,22 @@
+# consistent-gemma — Gemma 4 E2B fine-tuned on Consistent's heartbeat and
+# chat work. Built from the GGUF that train_unsloth.py exports:
+#
+#   ollama create consistent-gemma -f Modelfile
+#
+# RENDERER/PARSER must stay `gemma4`: they are Ollama's built-in Gemma 4 chat
+# template and tool-call parser, the same ones the stock gemma4 model uses and
+# the ones the training data was rendered to match. Without them tool calling
+# silently breaks.
+
+FROM ./out/consistent-gemma/gguf/consistent-gemma.Q4_K_M.gguf
+
+RENDERER gemma4
+PARSER gemma4
+
+PARAMETER num_ctx 16384
+PARAMETER temperature 0.4
+PARAMETER top_k 64
+PARAMETER top_p 0.95
+
+LICENSE """Gemma 4 is licensed under the Apache License, Version 2.0.
+Fine-tuned weights by Consistent, also Apache-2.0."""

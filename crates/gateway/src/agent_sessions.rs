@@ -130,6 +130,16 @@ pub struct SessionOutcome {
 ///
 /// `--verbose` is not optional: the CLI refuses `--output-format stream-json`
 /// with `-p` without it.
+/// The model agentic sessions run on: the AI page's Claude model when Claude
+/// is the chosen brain, otherwise the completion adapter's default alias.
+fn session_model() -> String {
+    crate::ai_brain::chosen()
+        .filter(|b| b.provider == "claude-code")
+        .map(|b| b.model)
+        .filter(|m| !m.trim().is_empty() && !m.eq_ignore_ascii_case("default"))
+        .unwrap_or_else(|| consistent_world_llm::claude_code::DEFAULT_MODEL_ALIAS.to_string())
+}
+
 pub fn build_args(req: &SessionRequest) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
@@ -141,8 +151,12 @@ pub fn build_args(req: &SessionRequest) -> Vec<String> {
         // session — which can be a model the installed CLI cannot serve, and
         // then every session here dies in seconds with an API error. Same fix
         // as the completion adapter (see `claude_code::DEFAULT_MODEL_ALIAS`).
+        // When the owner connected Claude on the AI page, their model wins:
+        // an Opus window can be spent while Sonnet still answers, and a
+        // hard-coded alias then failed every session the subscription could
+        // have served.
         "--model".to_string(),
-        consistent_world_llm::claude_code::DEFAULT_MODEL_ALIAS.to_string(),
+        session_model(),
     ];
     match req.permission_mode {
         PermissionMode::BypassPermissions => {

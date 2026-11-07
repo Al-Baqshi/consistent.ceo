@@ -52,6 +52,24 @@ background (a LaunchAgent on macOS, a systemd user service on Linux). Open
 <http://127.0.0.1:18800>. Set `CONSISTENT_WORLD_NO_SERVICE=1` to skip the
 background service.
 
+Once the gateway is running you can drive it from the terminal. These commands
+call the running gateway, so they show exactly what the dashboard and the phone
+show:
+
+```bash
+consistent-world chat                      # interactive; /quit or Ctrl-D leaves
+consistent-world chat "what is overdue?"   # one turn, streamed to stdout
+git diff | consistent-world chat -e acme   # piped stdin is the message; -e picks an entity
+consistent-world status                    # gateway health, task counts, approvals waiting
+consistent-world tasks -s in-progress      # list tasks (--json for scripts)
+consistent-world entities
+consistent-world approvals                 # what is waiting for you
+consistent-world approve 3f9a              # an id prefix is enough
+consistent-world reject 3f9a
+```
+
+Answers go to stdout and progress or errors to stderr, so output pipes cleanly.
+
 ### Docker
 
 ```bash

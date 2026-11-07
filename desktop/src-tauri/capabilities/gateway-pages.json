@@ -1,0 +1,9 @@
+{
+  "identifier": "gateway-pages",
+  "description": "The dashboard is served by this computer's own gateway, which Tauri treats as a remote origin. It may listen for the shell's events (terminal output, sign-in) and nothing else from plugins; the app's own commands need no grant.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://localhost:18800/*", "http://127.0.0.1:18800/*"]
+  },
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

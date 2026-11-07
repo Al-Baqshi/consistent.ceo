@@ -419,7 +419,7 @@ pub(super) fn humanize_provider_error(api_key_env: &str, raw: &str) -> String {
             };
             return format!(
                 "Your `{cli}` CLI is too old for this model{needed}. Update it ({upgrade}), \
-                 then press Test."
+                 then try again."
             );
         }
         if lower.contains("token_revoked")
@@ -433,7 +433,7 @@ pub(super) fn humanize_provider_error(api_key_env: &str, raw: &str) -> String {
         {
             return format!(
                 "Your `{cli}` sign-in has expired. Run `{sign_in}` in Terminal, sign in again, \
-                 then press Test."
+                 then try again."
             );
         }
         if lower.contains("rate limit")
@@ -454,7 +454,7 @@ pub(super) fn humanize_provider_error(api_key_env: &str, raw: &str) -> String {
         if lower.contains("api_error") {
             return format!(
                 "The `{cli}` CLI could not reach its service — usually a lapsed sign-in. Run \
-                 `{sign_in}` in Terminal, then press Test."
+                 `{sign_in}` in Terminal, then try again."
             );
         }
     }
@@ -472,10 +472,10 @@ pub(super) fn humanize_provider_error(api_key_env: &str, raw: &str) -> String {
         || lower.contains("unauthorized")
         || lower.contains("401")
     {
-        return "The API key was rejected. Re-enter it and press Connect again.".to_string();
+        return "The API key was rejected. Check it, paste it again, and try again.".to_string();
     }
     if lower.contains("rate limit") || lower.contains("429") {
-        return "The provider is rate limiting this account. Wait a moment and press Test again."
+        return "The provider is rate limiting this account. Wait a moment and try again."
             .to_string();
     }
 

@@ -199,6 +199,7 @@ fn entity_repo_fields(entity: &Entity) -> Vec<String> {
         }
     };
     push(entity.setup.repo_path.as_deref());
+    push(entity.setup.repo_url.as_deref());
     push(entity.local_path.as_deref());
     push(entity.path.as_deref());
     push(entity.default_workspace_root.as_deref());

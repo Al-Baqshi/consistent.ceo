@@ -88,6 +88,11 @@ pub const META_DESCRIPTION: &str = "description";
 /// Distinct from a timestamp so the reason survives in the task row.
 pub const ATTEMPT_NO_CWD: &str = "no_cwd";
 
+/// Marker value recorded when a browser task's entity has no site the agent may use.
+/// Like [`ATTEMPT_NO_CWD`], it keeps the reason in the task row and stops retries: allowing a
+/// site and re-queueing the task is what releases it.
+pub const ATTEMPT_NO_BROWSER_SITES: &str = "no_browser_sites";
+
 /// How many times the executor may start a task on its own. The second attempt
 /// exists for runs that crashed (CLI died, stall timeout) — a `blocked`
 /// verdict from a finished run never auto-retries, it needs a human.
@@ -664,7 +669,7 @@ fn evidence_summary(pack: &crate::evidence::EvidencePack) -> String {
 /// Materialise the browser MCP config for one run. Written under the
 /// gateway's own directory (not the jail) so the task cannot rewrite the
 /// policy it is about to run under.
-async fn write_browser_mcp_config(run_id: &str) -> Option<String> {
+async fn write_browser_mcp_config(run_id: &str, allowed_sites: &[String]) -> Option<String> {
     let binary = std::env::current_exe().ok()?;
     let home = crate::config::expand_tilde_path("~/.consistent-world");
     let profile_dir = format!("{home}/browser-profile");
@@ -676,17 +681,34 @@ async fn write_browser_mcp_config(run_id: &str) -> Option<String> {
     // Per-run config: the artifact directory differs per run, so a shared file
     // would hand one run's screenshots to the next.
     let path = format!("{config_dir}/browser-{run_id}.json");
-    // Headful: the operator signs into sites in this profile once, by hand,
-    // and those sessions are what make later unattended runs useful.
+    // The Consistent browser: the window the operator signed in to by hand. It is opened if it is
+    // closed, so the work can be watched, and the run drives that same window. If it cannot be
+    // opened (no Chrome, a window already open that cannot be driven) the run falls back to
+    // launching its own Chrome on the same profile, as it always did.
+    let cdp_url = match crate::browser_manager::ensure_running().await {
+        Ok(endpoint) => Some(endpoint),
+        Err(reason) => {
+            tracing::warn!(%reason, "the Consistent browser is unavailable; the run launches its own Chrome");
+            None
+        }
+    };
     let config = crate::mcp_browser::mcp_config_json(
         &binary.to_string_lossy(),
         &profile_dir,
         &artifact_dir,
         false,
+        cdp_url.as_deref(),
+        allowed_sites,
     );
     tokio::fs::write(&path, serde_json::to_vec_pretty(&config).ok()?)
         .await
         .ok()?;
+    // The file names a debugging endpoint; keep it to the person who owns this computer.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
+    }
     Some(path)
 }
 
@@ -817,6 +839,30 @@ impl TaskExecutorTicker {
                 .await;
                 continue;
             };
+            // Browser work reaches real accounts, so it starts only where a person has named the
+            // sites the agent may use for this entity. Nothing is allowed by default.
+            if task_meta_str(&task, "actionKind").as_deref() == Some("browser")
+                && entity.browser_sites.is_empty()
+            {
+                self.set_meta(
+                    &task.id,
+                    &[(META_AUTO_RUN_ATTEMPTED, ATTEMPT_NO_BROWSER_SITES)],
+                )
+                .await;
+                self.push_task_feed(
+                    &task,
+                    OperatorFeedKind::TaskBlocked,
+                    format!("Blocked: {}", task.title),
+                    format!(
+                        "This is browser work, and '{}' has no sites the agent may use yet. \
+                         Add the sites in the entity's Permissions tab (for example github.com), \
+                         then re-queue the task.",
+                        entity.name
+                    ),
+                )
+                .await;
+                continue;
+            }
             if self
                 .in_flight
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -938,7 +984,7 @@ impl TaskExecutorTicker {
         // operator asked for as browser work gets the MCP server, and it drives
         // a dedicated Chrome profile — never the operator's own.
         let mcp_config_path = if task_meta_str(task, "actionKind").as_deref() == Some("browser") {
-            write_browser_mcp_config(&run_id).await
+            write_browser_mcp_config(&run_id, &entity.browser_sites).await
         } else {
             None
         };
@@ -1217,6 +1263,51 @@ mod tests {
         t.metadata = Some(serde_json::json!({
             META_EXECUTABLE: true,
             META_AUTO_RUN_ATTEMPTED: ATTEMPT_NO_CWD,
+        }));
+        assert!(!task_is_auto_executable_at(&t, &entity(None), now()));
+    }
+
+    #[tokio::test]
+    async fn browser_work_waits_for_a_site_the_agent_may_use() {
+        // Browser work reaches real accounts. An entity that has not named a single site gets no
+        // run: the tick records why on the task, leaves it queued-but-marked (so it is not
+        // retried until a person re-queues it), and starts nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let control = Arc::new(ControlState::new("openai", "https://x", "m"));
+        let mut e = entity(None);
+        e.setup.repo_path = Some(dir.path().to_string_lossy().to_string());
+        assert!(e.browser_sites.is_empty());
+        control.entities.write().await.push(e);
+        let mut t = task();
+        t.metadata = Some(serde_json::json!({ META_EXECUTABLE: true, "actionKind": "browser" }));
+        let task_id = t.id.clone();
+        control.tasks.write().await.push(t);
+
+        let ticker = TaskExecutorTicker::new(control.clone(), 60);
+        assert_eq!(ticker.run_one_tick(now()).await, 0, "nothing may start");
+        {
+            let tasks = control.tasks.read().await;
+            let after = tasks.iter().find(|t| t.id == task_id).unwrap();
+            assert_eq!(after.status, TaskStatus::Queued, "the task is not consumed");
+            assert_eq!(
+                meta_marker(after, META_AUTO_RUN_ATTEMPTED).as_deref(),
+                Some(ATTEMPT_NO_BROWSER_SITES),
+                "the reason is recorded on the task"
+            );
+        }
+        // And it stays blocked on later ticks rather than being retried every minute.
+        assert_eq!(ticker.run_one_tick(now()).await, 0);
+        let sites_free_flag = ticker.in_flight.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(!sites_free_flag, "the single-flight slot is not left held");
+    }
+
+    #[test]
+    fn a_task_blocked_for_want_of_browser_sites_stays_marked_until_requeued() {
+        let mut t = task();
+        t.metadata = Some(serde_json::json!({
+            META_EXECUTABLE: true,
+            "actionKind": "browser",
+            META_AUTO_RUN_ATTEMPTED: ATTEMPT_NO_BROWSER_SITES,
         }));
         assert!(!task_is_auto_executable_at(&t, &entity(None), now()));
     }
@@ -1731,12 +1822,16 @@ mod tests {
     fn skills_ride_the_task_prompt_with_a_read_exception_to_the_jail() {
         let mut t = task();
         t.metadata = Some(serde_json::json!({ META_EXECUTABLE: true }));
-        let block = "## Skills\n- `release-checklist` — Ship safely. Use when releasing. — /x/SKILL.md";
+        let block =
+            "## Skills\n- `release-checklist` — Ship safely. Use when releasing. — /x/SKILL.md";
         let p = build_task_prompt(&t, None, Some(block));
         assert!(p.contains("release-checklist"));
         assert!(p.contains("you may read the skill files listed above"));
         let i_skills = p.find("## Skills").unwrap();
         let i_rules = p.find("HOW TO WORK").unwrap();
-        assert!(i_skills < i_rules, "the rule that permits reading them follows the list");
+        assert!(
+            i_skills < i_rules,
+            "the rule that permits reading them follows the list"
+        );
     }
 }

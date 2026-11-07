@@ -247,8 +247,21 @@ fn stop_children(app: &tauri::AppHandle) -> bool {
 /// installed and waiting (`updater.rs`).
 fn tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let show = MenuItem::with_id(app, "show", "Show Consistent", true, None::<&str>)?;
+    // Relabelled "Reminders (N due)" by the companion; desktop notifications
+    // can't be clicked through to the app, so this is the way in.
+    let reminders = MenuItem::with_id(app, "reminders", "Reminders", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide Window", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    // The companion relabels this item, so hand it the one in the menu now
+    // showing, and carry the current label over when the menu is rebuilt.
+    if let Some(slot) = app.try_state::<companion::TrayReminders>() {
+        if let Ok(mut slot) = slot.0.lock() {
+            if let Some(label) = slot.as_ref().and_then(|old| old.text().ok()) {
+                let _ = reminders.set_text(label);
+            }
+            *slot = Some(reminders.clone());
+        }
+    }
     let pending = app.try_state::<PendingUpdate>().and_then(|p| p.version());
     match pending {
         Some(version) => {
@@ -259,9 +272,9 @@ fn tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 true,
                 None::<&str>,
             )?;
-            Menu::with_items(app, &[&restart, &show, &hide, &quit])
+            Menu::with_items(app, &[&restart, &show, &reminders, &hide, &quit])
         }
-        None => Menu::with_items(app, &[&show, &hide, &quit]),
+        None => Menu::with_items(app, &[&show, &reminders, &hide, &quit]),
     }
 }
 
@@ -288,6 +301,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let _ = w.set_focus();
                 }
             }
+            "reminders" => companion::open_reminders(app),
             "hide" => {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
@@ -354,6 +368,7 @@ fn main() {
         .manage(LoginState::default())
         .manage(PtySessions::default())
         .manage(PendingUpdate::default())
+        .manage(companion::TrayReminders::default())
         .invoke_handler(tauri::generate_handler![
             voice_start,
             voice_stop,

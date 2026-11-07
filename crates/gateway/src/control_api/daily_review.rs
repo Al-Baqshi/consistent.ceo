@@ -91,7 +91,11 @@ pub(super) struct DailyReviewResponse {
 }
 
 /// Projects a [`Task`] down to the [`TaskLite`] shape the day view needs.
-pub(super) fn task_lite(task: &Task, entity_names: &HashMap<String, String>, now: DateTime<Utc>) -> TaskLite {
+pub(super) fn task_lite(
+    task: &Task,
+    entity_names: &HashMap<String, String>,
+    now: DateTime<Utc>,
+) -> TaskLite {
     TaskLite {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -336,6 +340,24 @@ pub(super) async fn snooze_task(
             .iter_mut()
             .find(|t| t.id == id && task_visible_in_workspace(t, &entity_ids, &workspace_id))
             .ok_or(StatusCode::NOT_FOUND)?;
+        // A reminder's real fire time lives in its metadata, and snoozing one
+        // that already nudged must bring it back rather than 409.
+        if crate::reminders::is_reminder_like(t)
+            && !matches!(t.status, TaskStatus::Cancelled | TaskStatus::Failed)
+        {
+            let due = Utc::now() + chrono::Duration::hours(hours);
+            crate::reminders::reschedule(t, due, None);
+            let updated = t.clone();
+            drop(tasks);
+            s.persist_task_row(&updated).await;
+            s.push_operator_feed(
+                OperatorFeedKind::TaskRetryScheduled,
+                &updated,
+                Some(format!("Snoozed {hours}h")),
+            )
+            .await;
+            return Ok(Json(updated));
+        }
         if matches!(
             t.status,
             TaskStatus::Completed | TaskStatus::Cancelled | TaskStatus::Failed

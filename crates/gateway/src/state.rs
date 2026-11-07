@@ -860,6 +860,11 @@ pub struct Entity {
     pub preferred_model_tier: Option<String>,
     #[serde(default)]
     pub allowed_agent_groups: Vec<String>,
+    /// Sites the agent may use in the Consistent browser for this entity, as bare
+    /// domains (`github.com` also covers its subdomains). Empty means none:
+    /// browser work for the entity does not run until a person names a site.
+    #[serde(default)]
+    pub browser_sites: Vec<String>,
     #[serde(default)]
     pub setup: EntitySetup,
     #[serde(default)]
@@ -944,8 +949,16 @@ pub struct EntitySetup {
     pub primary_domain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_email: Option<String>,
+    /// The folder on this computer where the work lives (older records may
+    /// hold a repository URL here; `repo_url` is where those belong now).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_path: Option<String>,
+    /// The hosted repository, e.g. `https://github.com/acme/widget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    /// The live website, as a full URL. `primary_domain` stays the bare domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_stack: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2079,6 +2092,13 @@ impl ControlState {
     // window, mirrors to Surreal and the local vault, then fans out to the
     // notification dispatcher unless quiet hours are active for this entity.
     pub async fn append_operator_feed_event(&self, event: OperatorFeedEvent) {
+        self.append_operator_feed_event_with(event, true).await;
+    }
+
+    /// [`Self::append_operator_feed_event`], with the push/webhook fan-out
+    /// optional. `notify = false` still records the event (feed, vault, the
+    /// desktop and phone pollers see it); it only skips the push.
+    pub async fn append_operator_feed_event_with(&self, event: OperatorFeedEvent, notify: bool) {
         // Scoped so the guard is released before the first await. It used to be a
         // named binding that lived to the end of the function — held across the
         // Surreal append *and* the vault mirror, with `entities.read()` taken in
@@ -2136,6 +2156,7 @@ impl ControlState {
         // channel doesn't await, so notification delivery can never slow down
         // (or fail) a feed write — a closed channel just means feed-only.
         if let Some(tx) = self.notification_tx.get()
+            && notify
             && crate::notify::is_notifiable(&event.kind)
             && !muted_by_quiet_hours
         {
@@ -2189,6 +2210,33 @@ impl ControlState {
             detail,
             approval_id: None,
         })
+        .await;
+    }
+
+    /// A reminder nudge. Carries the task id so clients can offer Done /
+    /// Snooze on the notification itself.
+    pub async fn push_reminder_feed(
+        &self,
+        task: &Task,
+        title: String,
+        detail: Option<String>,
+        push: bool,
+    ) {
+        self.append_operator_feed_event_with(
+            OperatorFeedEvent {
+                id: Uuid::new_v4().to_string(),
+                timestamp: Utc::now().to_rfc3339(),
+                kind: OperatorFeedKind::ScheduledTaskFired,
+                task_id: Some(task.id.clone()),
+                mission_id: None,
+                entity_id: task.entity_id.clone(),
+                connection_id: None,
+                title,
+                detail,
+                approval_id: None,
+            },
+            push,
+        )
         .await;
     }
 

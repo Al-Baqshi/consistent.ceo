@@ -491,3 +491,134 @@ mod tests {
         assert_eq!(body["error"], "a skill named `x` already exists");
     }
 }
+
+// ── Draft with the AI ────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub(super) struct DraftSkillRequest {
+    /// What the person wants the skill to do, in their own words.
+    idea: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct DraftSkillResponse {
+    name: String,
+    description: String,
+    body: String,
+}
+
+/// The first JSON object in a model reply, whether or not it was fenced.
+fn json_object_in(text: &str) -> Option<serde_json::Value> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    (end > start).then(|| serde_json::from_str(&text[start..=end]).ok())?
+}
+
+/// `POST /api/skills/draft`: turn a plain-words idea into a name, a "when to
+/// use it" line and instructions, for the person to review and edit before
+/// anything is saved. Runs on the AI the owner chose, like everything else.
+pub(super) async fn draft_skill(
+    State(state): State<ServerState>,
+    Json(body): Json<DraftSkillRequest>,
+) -> ApiResult<DraftSkillResponse> {
+    let idea = body.idea.trim();
+    if idea.is_empty() || idea.chars().count() > 2000 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "Describe the skill in a sentence or two (up to 2,000 characters).",
+        ));
+    }
+    let Some(cfg) = state.app_config.clone() else {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The gateway's configuration is unavailable.",
+        ));
+    };
+    let Some(brain) = crate::ai_brain::effective() else {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "No AI is connected yet. Connect one in AI settings, then try again.",
+        ));
+    };
+    let client = crate::capture::brain_client(cfg.as_ref(), &brain);
+    let request = CompletionRequest {
+        model: brain.model.clone(),
+        messages: vec![
+            ChatMessage {
+                role: Role::System,
+                content: "You write skills for an AI assistant: short, reusable instructions it follows when a request matches. \
+Reply with ONLY a JSON object, no prose and no code fences, with exactly these string fields:\n\
+- \"name\": two to five plain words, e.g. \"Weekly pricing review\".\n\
+- \"description\": one or two sentences saying what the skill does and the kinds of request that should trigger it (under 600 characters).\n\
+- \"body\": the instructions in Markdown. Start with a \"# \" title, then \"## When to use\", \"## Steps\" (a short numbered list), and \"## Rules\" (what to always or never do). \
+Write in plain, direct language. Do not invent facts about the person's business; where something specific is needed, tell the assistant to ask."
+                    .to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: Role::User,
+                content: format!("The skill I want: {idea}"),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ],
+        tools: None,
+        max_tokens: Some(1800),
+        temperature: Some(0.4),
+        stream: false,
+    };
+    let reply = match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        client.complete(request),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response.content.unwrap_or_default(),
+        Ok(Err(err)) => {
+            warn!(error = %err, "skill draft failed");
+            return Err(api_error(
+                StatusCode::BAD_GATEWAY,
+                "The AI couldn't draft that just now. Check AI settings and try again.",
+            ));
+        }
+        Err(_) => {
+            return Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "The AI took too long to answer. Try again in a moment.",
+            ));
+        }
+    };
+    let unreadable = || {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "The AI's draft wasn't readable. Try again, or write the skill yourself.",
+        )
+    };
+    let value = json_object_in(&reply).ok_or_else(unreadable)?;
+    let field = |k: &str| value[k].as_str().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let (Some(name), Some(description), Some(body)) =
+        (field("name"), field("description"), field("body"))
+    else {
+        return Err(unreadable());
+    };
+    Ok(Json(DraftSkillResponse {
+        name: name.chars().take(80).collect(),
+        description: description.chars().take(1000).collect(),
+        body,
+    }))
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::json_object_in;
+
+    #[test]
+    fn finds_the_object_through_fences_and_chatter() {
+        let fenced = "Here you go:\n```json\n{\"name\":\"A\",\"description\":\"B\",\"body\":\"# C\"}\n```";
+        let v = json_object_in(fenced).unwrap();
+        assert_eq!(v["name"], "A");
+        assert!(json_object_in("no json here").is_none());
+        assert!(json_object_in("} backwards {").is_none());
+    }
+}

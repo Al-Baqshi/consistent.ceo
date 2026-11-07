@@ -6,6 +6,7 @@
     copySkill,
     createSkill,
     deleteSkill,
+    draftSkill,
     getSkill,
     importLocalSkills,
     listLocalSkillSources,
@@ -61,6 +62,25 @@
   let newTarget = $state('global');
   let createBusy = $state(false);
   let createError = $state<string | null>(null);
+  let draftIdea = $state('');
+  let draftBusy = $state(false);
+
+  /** Let the AI turn a plain-words idea into the fields below; the person edits before saving. */
+  async function draftWithAi(): Promise<void> {
+    if (draftBusy || !draftIdea.trim()) return;
+    draftBusy = true;
+    createError = null;
+    try {
+      const d = await draftSkill(draftIdea.trim());
+      newName = d.name;
+      newDescription = d.description;
+      newBody = d.body;
+    } catch (err) {
+      createError = skillErrorMessage(err, 'Could not draft the skill.');
+    } finally {
+      draftBusy = false;
+    }
+  }
 
   // ── Import ──
   let importing = $state(false);
@@ -283,6 +303,7 @@
     newDescription = '';
     newBody = SKILL_TEMPLATE;
     newTarget = focusEntity ?? 'global';
+    draftIdea = '';
     createError = null;
     creating = true;
   }
@@ -563,7 +584,7 @@
       <section class="group">
         <div class="group-head">
           <h2 class="group-title">Your workspace</h2>
-          <p class="group-sub">Offered in every venture.</p>
+          <p class="group-sub">Offered everywhere.</p>
         </div>
         <ul class="grid">
           {#each workspaceSkills as skill (skill.id)}
@@ -741,6 +762,21 @@
         void submitCreate();
       }}
     >
+      <div class="draft-box">
+        <label class="field">
+          <span class="field-label">Describe it in your own words</span>
+          <textarea
+            rows="3"
+            bind:value={draftIdea}
+            placeholder="e.g. Every Monday, look at last week's sales and tell me what to change about pricing."
+          ></textarea>
+          <span class="field-hint">The AI drafts the name, when to use it and the steps. You can edit everything before saving.</span>
+        </label>
+        <button type="button" class="btn btn-primary" disabled={draftBusy || !draftIdea.trim()} onclick={draftWithAi}>
+          {draftBusy ? 'Drafting…' : 'Draft it for me'}
+        </button>
+      </div>
+      <p class="field-hint">Or fill it in yourself:</p>
       <div class="field-row">
         <label class="field grow">
           <span class="field-label">Name</span>
@@ -759,7 +795,7 @@
         <label class="field">
           <span class="field-label">Available in</span>
           <select bind:value={newTarget}>
-            <option value="global">Every venture</option>
+            <option value="global">Everywhere</option>
             {#each entities as e (e.id)}
               <option value={e.id}>{e.name} only</option>
             {/each}
@@ -771,7 +807,7 @@
         <textarea
           rows="3"
           bind:value={newDescription}
-          placeholder="Reviews a venture's pricing against margin targets. Use when the user asks about pricing, discounts, or a quote."
+          placeholder="Reviews a business's pricing against margin targets. Use when the user asks about pricing, discounts, or a quote."
         ></textarea>
         <span class="field-hint" class:is-over={newDescription.length > 1024}>
           {newDescription.length}/1024 — say what it does and the words that should trigger it.
@@ -871,7 +907,7 @@
         <label class="field grow">
           <span class="field-label">Add to</span>
           <select bind:value={importTarget}>
-            <option value="global">Every venture</option>
+            <option value="global">Everywhere</option>
             {#each entities as e (e.id)}
               <option value={e.id}>{e.name} only</option>
             {/each}
@@ -1045,6 +1081,8 @@
     font-size: 12px;
     color: var(--text-primary);
   }
+  .draft-box { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-secondary); }
+  .draft-box .field { width: 100%; }
   .inline-error {
     margin: 0;
     padding: 10px 12px;

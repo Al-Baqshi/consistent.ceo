@@ -171,6 +171,13 @@ See P0.5 in the roadmap.
 - **LLM routing** — six providers including the Claude CLI and Codex CLI
   subscription lanes plus Ollama; three override layers, tier fallback,
   cost debit. Never requires an API key.
+- **Terminal client** (`crates/gateway/src/cli_client.rs`) — `chat`
+  (interactive, one-shot, or piped stdin; streams NDJSON), `status`, `tasks`,
+  `entities`, `approvals`, `approve`, `reject`. Thin HTTP calls to the running
+  gateway with the machine token, never a second gateway. Verified against a
+  throwaway gateway (list commands, entity lookup, errors, not-running
+  message); streamed *tokens* from a live model were not exercised because
+  that sandbox had no AI connected. No tests of its own yet.
 - **Heartbeats** — per-entity pulse, director run with lessons recall,
   cost debit, canned fallback when the model lane is down.
 - **Desktop / mobile / remote** — Tauri sidecar with signing and
@@ -184,6 +191,80 @@ See P0.5 in the roadmap.
   (`consistent-world pair`) and the phone's own crypto module; the phone
   screen itself has only been type-checked, not run on a device, and needs a
   dev-client rebuild for `expo-crypto`.
+- **One AI, chosen once, used everywhere** (2026-10-14, `ai_brain.rs`,
+  `control_api/ai_api.rs`, `AiPanel.svelte`) — Settings → AI offers three
+  ways: subscription (`claude`/`codex` CLI, including the copy an editor
+  extension bundles, which `PATH` never had), local Ollama (chat models
+  only; embedding models no longer count), or an API key (tested with one
+  real turn before it is saved). The choice is persisted to
+  `~/.consistent-world/ai.json` and enforced in `capture::build_llm_client`,
+  so heartbeats, tasks, missions, entity analysis and agentic sessions all
+  run on it, model included; with nothing chosen, a dead lane falls through
+  to whatever this machine can run. Folder import no longer requires the
+  `claude` CLI and falls back to a direct read when the agentic run fails.
+  Also fixed: model listing built `/v1/v1/models` (every API-key save
+  failed) and sent Anthropic a bearer token. Verified live: the bundled CLI
+  was detected and connected with a real reply. The old `/api/llm/*`
+  provider/model endpoints remain but the settings page no longer uses them.
+- **AI page, second pass** (2026-10-17, `AiPanel.svelte`, `settings/+page.svelte`)
+  — one screen instead of three tabs: every option with a status chip and one
+  next-step button; account, phone and working style follow, and status,
+  coding agents, the vault and the terminal sit under a collapsed Advanced.
+  Fixed: API-key connects always sent a model, so the "find one this key can
+  call" fallback never ran (now defaults to Automatic); "Pick automatically"
+  swallowed its own error; the 20 s poll reset a model being chosen; a custom
+  Ollama address was honoured by detection but not by the connect test or by
+  runtime calls (`ai_brain::ollama_base`); a download in progress was lost
+  when the page was closed. Driven end to end in a browser against a gateway
+  with a stand-in Ollama (download with progress, resume after reload,
+  auto-connect, persistence, pick automatically, rejected key); phone width
+  and light theme checked. Not exercised this round: a real Claude or API-key
+  success (the sandbox had no login; the failure messages were). The shipped
+  desktop app was the Oct 13 build and predates the panel entirely, so it
+  needs a rebuild to show any of this.
+- **Entities, connections and the shell, third pass** (2026-10-17) — import
+  and the entity setup now keep **local folder, GitHub repo and website** as
+  separate fields (`EntitySetup.repo_url` / `website_url`; the import form
+  prefills them and the analysis may fill them). GitHub connects with no
+  environment variable: the signed-in `gh` CLI or a pasted token, verified
+  against GitHub before anything is kept in the keychain
+  (`POST /api/entities/{id}/connections/github/token`); the browser device flow
+  still needs `CONSISTENT_WORLD_GITHUB_CLIENT_ID` and is now a side option. The
+  Strategy tab is a one-question-at-a-time interview that saves each answer
+  (rule-based, not yet AI follow-ups); Records, Schedule and Permissions
+  explain themselves, and the Schedule cron example was wrong (`0 9 * * * *` is
+  "9 past every hour") and now has local-time presets. "Write a skill" can draft
+  from a plain sentence (`POST /api/skills/draft`). The Phone panel can turn on
+  Tailscale remote access (`POST /api/remote/setup`). The dashboard served
+  page routes as `application/octet-stream`, so a reload or deep link downloaded
+  a file; fixed. Desktop: the page is a remote origin to Tauri and had no
+  permissions, hence "not allowed by ACL" in the Terminal; added a scoped
+  capability (`capabilities/gateway-pages.json`). New full-bleed light app icon.
+  Browser control is planned, not built: `docs/plans/browser-control.md`.
+  Verified: 723 gateway tests, clippy, 21 browser checks on a clean entity,
+  the installed signed app (deep links, new screens, `gh` login verifies).
+  Not exercised: a real GitHub connect (would store a token), the Tailscale
+  setup call (would change your Tailscale), the Terminal fix and the Dock icon
+  on screen.
+- **The Consistent browser** (2026-10-17, `browser_manager.rs`, `tools/src/chrome.rs`,
+  `docs/plans/browser-control.md` M1) — a visible Chrome window on a profile of its own that a
+  person signs in to and browser tasks then drive, per-entity site lists, and the safety work
+  that sharing a signed-in browser required (attaching closes only its own tab, `evaluate` off
+  when attached, popups no longer escape the policy). A browser task on an entity with no sites
+  now blocks instead of running, which is stricter than before. Verified with a scripted run
+  against real Chrome and the real MCP server (sign in, close, reopen, still signed in;
+  refusals; the person's tab untouched), 9 real-Chrome tests, 732 gateway tests and the
+  executor gate. Not exercised: a visible window through the shipped app, a real site login,
+  a real `claude` run. M2 (watch, pause, take over) is not started.
+- **Pairing on Wi-Fi with nothing installed** (2026-10-14, `wifi_access.rs`)
+  — making a pairing code with no relay or Tailscale Serve opens a second,
+  guarded listener on the computer's Wi-Fi address (main listener stays on
+  loopback) and remembers the choice. Wi-Fi requests are tagged and may not
+  use the machine token or sign up; while it is on, the gateway stops
+  counting as "self-hosted" for the admin rule and the limiters throttle
+  Wi-Fi traffic. Tailscale/relay are now an optional "away from home" extra.
+  Tested through the router (guard, pairing over Wi-Fi, off switch); the
+  real socket bind and the macOS firewall prompt are unverified on a device.
 - **Local semantic memory** (2026-10-11, `embedding_setup.rs`) — Ollama's
   `nomic-embed-text`, pulled on first start, no key. Verified live: a fresh
   install enabled recall from local Ollama alone.

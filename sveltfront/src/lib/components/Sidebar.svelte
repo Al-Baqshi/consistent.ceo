@@ -75,7 +75,7 @@
     // `consistent-world-agnosticAI` was a rename left behind: that repo does not
     // exist, so this link 404'd for everyone. The real one is private, so it
     // still only resolves for signed-in collaborators.
-    { label: 'GitHub', href: 'https://github.com/Al-Baqshi/Consistent-world', icon: GithubIcon, external: true }
+    { label: 'GitHub', href: 'https://github.com/Al-Baqshi/consistent.ceo', icon: GithubIcon, external: true }
   ];
 
   let { onNavigate }: { onNavigate?: () => void } = $props();

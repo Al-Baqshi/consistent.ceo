@@ -104,13 +104,18 @@ fn is_machine_owner_principal(principal_id: &str) -> bool {
 ///
 /// The relay matters because it forwards `/g/<id>/api/auth/register` from the
 /// internet to a loopback-bound gateway: with it on, a stranger can sign up.
+/// Phone access on Wi-Fi (`wifi_access`) matters for the same reason — it puts
+/// this gateway on the home network — so while it is on, the rule is off too.
+/// The owner's own account (`bearer`) stays admin either way.
 pub(crate) fn gateway_is_self_hosted(state: &ServerState) -> bool {
     let loopback = state
         .app_config
         .as_ref()
         .map(|cfg| crate::billing::is_loopback_bind(&cfg.gateway_bind))
         .unwrap_or(false);
-    loopback && crate::relay_client::RelayClientConfig::from_env(0).is_none()
+    loopback
+        && crate::relay_client::RelayClientConfig::from_env(0).is_none()
+        && !crate::wifi_access::is_enabled()
 }
 
 /// Who may change instance-global state — LLM providers and their keys,
@@ -783,13 +788,17 @@ async fn require_bearer_token(
     // Reaching this machine from outside requires a real signed-in session.
     // A deploy secret is a *local* credential: it exists so the desktop shell
     // can talk to its own sidecar, and the startup guard already refuses to
-    // bind off-loopback while one is in use. The relay keeps the bind on
-    // loopback, so that guard cannot see this case — this is the same rule,
-    // applied where the principal is actually known.
-    if matches!(ctx.kind, PrincipalKind::Static) && arrived_over_relay(&request) {
+    // bind off-loopback while one is in use. The relay and the Wi-Fi listener
+    // keep the main bind on loopback, so that guard cannot see these cases —
+    // this is the same rule, applied where the principal is actually known.
+    // (The Wi-Fi listener's own guard refuses the machine token earlier; this
+    // is the second lock on the same door.)
+    if matches!(ctx.kind, PrincipalKind::Static)
+        && (arrived_over_relay(&request) || crate::wifi_access::arrived_over_wifi(&request))
+    {
         tracing::warn!(
             principal = %ctx.principal_id,
-            "refused a static-principal request arriving over the relay"
+            "refused a static-principal request arriving from off this machine"
         );
         return Err(StatusCode::FORBIDDEN);
     }

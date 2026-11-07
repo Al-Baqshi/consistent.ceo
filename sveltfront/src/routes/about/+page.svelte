@@ -120,7 +120,7 @@
     <div class="hero-actions">
       <a class="btn primary" href="/download">Download the app</a>
       <a class="btn" href="/">Open workspace</a>
-      <a class="btn ghost" href="https://github.com/Al-Baqshi/Consistent-world" target="_blank" rel="noreferrer">GitHub</a>
+      <a class="btn ghost" href="https://github.com/Al-Baqshi/consistent.ceo" target="_blank" rel="noreferrer">GitHub</a>
     </div>
   </section>
 

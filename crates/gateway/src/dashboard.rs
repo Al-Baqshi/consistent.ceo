@@ -126,7 +126,6 @@ async fn serve_dashboard_file(axum::extract::Path(path): axum::extract::Path<Str
 fn serve_file(path: &str) -> impl std::future::Future<Output = Response> + Send {
     let path = path.trim_start_matches('/').trim_end_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
-    let path_owned = path.to_string();
     let file = DASHBOARD_DIR
         .get_file(path)
         .or_else(|| DASHBOARD_DIR.get_file(format!("{path}/index.html")))
@@ -140,7 +139,11 @@ fn serve_file(path: &str) -> impl std::future::Future<Output = Response> + Send 
     async move {
         match file {
             Some(f) => {
-                let content_type = mime_guess::from_path(&path_owned)
+                // From the file actually served, not the URL: a page route like
+                // `/settings` has no extension and is answered with index.html,
+                // which as `application/octet-stream` makes a reload or a deep
+                // link download a file instead of opening the page.
+                let content_type = mime_guess::from_path(f.path())
                     .first_raw()
                     .unwrap_or("application/octet-stream");
                 Response::builder()

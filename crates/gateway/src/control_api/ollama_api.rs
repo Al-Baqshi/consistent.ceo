@@ -18,7 +18,7 @@ use std::sync::{LazyLock, Mutex};
 
 /// What a fresh install downloads when asked for "a local model": the base
 /// of the repo's tuned `consistent-beat` (local-models/README.md).
-pub(crate) const DEFAULT_LOCAL_CHAT_MODEL: &str = "gemma4:latest";
+pub(crate) const DEFAULT_LOCAL_CHAT_MODEL: &str = "gemma4:e2b";
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]

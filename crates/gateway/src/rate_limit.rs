@@ -190,7 +190,9 @@ pub async fn limit_public_auth(
         .as_ref()
         .map(|cfg| crate::billing::is_loopback_bind(&cfg.gateway_bind))
         .unwrap_or(false);
-    if is_loopback {
+    // A loopback bind is only this machine — except for what arrives through
+    // the Wi-Fi listener, which is the network and is throttled like it.
+    if is_loopback && !crate::wifi_access::arrived_over_wifi(&request) {
         return Ok(next.run(request).await);
     }
     let path = request.uri().path();
@@ -227,9 +229,9 @@ pub async fn limit_authenticated(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Throttle what came from outside this machine. Two ways that happens: the
-    // gateway is bound off-loopback, or it is bound to loopback and reached
-    // through the relay tunnel.
+    // Throttle what came from outside this machine. Three ways that happens:
+    // the gateway is bound off-loopback, or it is bound to loopback and reached
+    // through the relay tunnel or the Wi-Fi listener (`wifi_access`).
     //
     // The earlier version skipped every loopback deployment — which is
     // precisely the configuration the relay creates, so the limiter was dead
@@ -245,7 +247,8 @@ pub async fn limit_authenticated(
         .headers()
         .get(consistent_world_relay::protocol::RELAY_MARKER_HEADER)
         .is_some();
-    if bound_to_loopback && !from_relay {
+    let from_wifi = crate::wifi_access::arrived_over_wifi(&request);
+    if bound_to_loopback && !from_relay && !from_wifi {
         return Ok(next.run(request).await);
     }
     let principal = request

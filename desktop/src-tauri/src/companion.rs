@@ -13,13 +13,24 @@
 //! `crates/gateway/src/notify.rs`. It is duplicated on purpose: this shell can
 //! be pointed at an older gateway, and an unknown kind should be ignored
 //! rather than mis-notified.
+//!
+//! Reminders that fired while the app was closed are caught up on launch from
+//! `/api/reminders` (the feed only says what happened since the cursor).
+//!
+//! Clicking a notification: tauri-plugin-notification 2.3 on desktop is
+//! fire-and-forget (notify-rust `show()`, no click callback or actions), so a
+//! click can't route anywhere. The tray menu carries "Reminders (N due)"
+//! instead, which brings the window forward on the Reminders panel.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use tauri::{AppHandle, Manager};
+use tauri::menu::MenuItem;
+use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::GatewayAuth;
@@ -30,6 +41,12 @@ const FEED_LIMIT: usize = 25;
 /// of banners.
 const MAX_NOTIFICATIONS_PER_TICK: usize = 3;
 const BODY_MAX_CHARS: usize = 180;
+/// Re-read `/api/reminders` for the tray count every this many feed polls.
+const REMINDER_REFRESH_TICKS: u32 = 12;
+/// Launch catch-up only covers nudges this recent.
+const CATCH_UP_HOURS: i64 = 12;
+const SHOWN_FILE: &str = "companion_reminders_shown.json";
+const SHOWN_KEEP_DAYS: i64 = 7;
 
 // One row from the gateway's operator feed, as returned by
 // /api/operator-feed.
@@ -40,6 +57,30 @@ struct FeedEvent {
     title: String,
     #[serde(default)]
     detail: Option<String>,
+    #[serde(default, rename = "taskId")]
+    task_id: Option<String>,
+}
+
+// One row from /api/reminders (gateway `reminders::ReminderView`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReminderRow {
+    id: String,
+    #[serde(default)]
+    what: String,
+    #[serde(default)]
+    title: String,
+    state: String,
+    #[serde(default)]
+    first_fired_at: Option<String>,
+    #[serde(default)]
+    nudges: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemindersPage {
+    #[serde(default)]
+    items: Vec<ReminderRow>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +113,12 @@ fn is_notifiable(kind: &str) -> bool {
             | "task_overdue"
             | "daily_digest"
             | "entity_workspace_needed"
+            // A "done" the verifier didn't believe, a scheduled mission review,
+            // a dead integration, a final report waiting to be read.
+            | "verification_needs_review"
+            | "mission_review_due"
+            | "connection_check_failed"
+            | "mission_report_ready"
     )
 }
 
@@ -90,6 +137,10 @@ fn kind_label(kind: &str) -> &'static str {
         "task_overdue" => "Overdue",
         "daily_digest" => "Your day",
         "entity_workspace_needed" => "Where should this live?",
+        "verification_needs_review" => "Needs review",
+        "mission_review_due" => "Review due",
+        "connection_check_failed" => "Connection failed",
+        "mission_report_ready" => "Report ready",
         _ => "Consistent CEO",
     }
 }
@@ -122,15 +173,19 @@ fn new_events_since(feed: &[FeedEvent], cursor: &str) -> Vec<FeedEvent> {
 #[derive(Default)]
 pub struct FeedCursor(Mutex<Option<String>>);
 
-// GET the operator feed with the shell's bearer token. Any failure — network,
+/// The tray's "Reminders" entry, relabelled with the due count.
+#[derive(Default)]
+pub struct TrayReminders(pub Mutex<Option<MenuItem<Wry>>>);
+
+// GET a gateway endpoint with the shell's bearer token. Any failure — network,
 // auth, bad JSON — collapses to None so the poller just retries next tick.
-async fn fetch_feed(app: &AppHandle) -> Option<Vec<FeedEvent>> {
+async fn get_json<T: serde::de::DeserializeOwned>(app: &AppHandle, path: &str) -> Option<T> {
     let (base_url, token) = {
         let auth = app.state::<GatewayAuth>();
         (auth.base_url.clone(), auth.token())
     };
     let mut req = reqwest::Client::new()
-        .get(format!("{base_url}/api/operator-feed?limit={FEED_LIMIT}"))
+        .get(format!("{base_url}{path}"))
         .timeout(Duration::from_secs(4));
     if let Some(t) = token {
         req = req.bearer_auth(t);
@@ -139,12 +194,171 @@ async fn fetch_feed(app: &AppHandle) -> Option<Vec<FeedEvent>> {
     if !res.status().is_success() {
         return None;
     }
-    let page: FeedPage = res.json().await.ok()?;
+    res.json().await.ok()
+}
+
+async fn fetch_feed(app: &AppHandle) -> Option<Vec<FeedEvent>> {
+    let page: FeedPage = get_json(app, &format!("/api/operator-feed?limit={FEED_LIMIT}")).await?;
+    Some(page.items)
+}
+
+async fn fetch_reminders(app: &AppHandle) -> Option<Vec<ReminderRow>> {
+    let page: RemindersPage = get_json(app, "/api/reminders?include=open").await?;
     Some(page.items)
 }
 
 fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// Show the main window on the dashboard's Reminders panel.
+pub fn open_reminders(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = w.show();
+    let _ = w.unminimize();
+    let _ = w.set_focus();
+    // Leave sign-in and the boot loader alone; anywhere else, go home to the panel.
+    let _ = w.eval(
+        "(function(){var h='#reminders',p=location.pathname;\
+         if(p.indexOf('/login')===0||p.indexOf('/loader')===0)return;\
+         if(p!=='/'){location.assign('/'+h);return;}\
+         if(location.hash!==h){location.hash=h;}\
+         else{window.dispatchEvent(new CustomEvent('consistent-world:open-reminders'));}})();",
+    );
+}
+
+fn tray_label(due: usize) -> String {
+    if due == 0 {
+        "Reminders".to_string()
+    } else {
+        format!("Reminders ({due} due)")
+    }
+}
+
+fn update_tray(app: &AppHandle, reminders: &[ReminderRow]) {
+    let due = reminders.iter().filter(|r| r.state == "due").count();
+    if let Some(state) = app.try_state::<TrayReminders>() {
+        if let Ok(guard) = state.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text(tray_label(due));
+            }
+        }
+    }
+}
+
+// ── Which reminders this machine has already announced ─────────────────────
+//
+// Reminder id → when the shell last raised a notification for it, persisted so
+// a relaunch doesn't re-announce what the operator already saw.
+
+fn shown_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join(SHOWN_FILE))
+}
+
+fn load_shown(app: &AppHandle) -> HashMap<String, String> {
+    shown_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_shown(app: &AppHandle, shown: &mut HashMap<String, String>, now: DateTime<Utc>) {
+    let cutoff = now - chrono::Duration::days(SHOWN_KEEP_DAYS);
+    shown.retain(|_, at| parse_time(at).map(|t| t >= cutoff).unwrap_or(false));
+    let Some(path) = shown_path(app) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(raw) = serde_json::to_string(shown) {
+        let _ = std::fs::write(path, raw);
+    }
+}
+
+fn parse_time(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s.trim())
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
+
+/// Roughly when the latest nudge went out. The view carries only the first
+/// fire and a count; the gateway's ladder is +1h, then next morning, then the
+/// morning after (`reminders::follow_up_after`), so this is an estimate.
+fn last_nudge_estimate(first: DateTime<Utc>, nudges: u32, now: DateTime<Utc>) -> DateTime<Utc> {
+    let est = match nudges {
+        0 | 1 => first,
+        2 => first + chrono::Duration::hours(1),
+        3 => first + chrono::Duration::hours(16),
+        _ => first + chrono::Duration::hours(40),
+    };
+    est.min(now)
+}
+
+/// Due reminders whose latest nudge was recent and hasn't been announced here.
+fn catch_up_candidates<'a>(
+    reminders: &'a [ReminderRow],
+    shown: &HashMap<String, String>,
+    now: DateTime<Utc>,
+) -> Vec<&'a ReminderRow> {
+    reminders
+        .iter()
+        .filter(|r| r.state == "due")
+        .filter(|r| {
+            let Some(first) = r.first_fired_at.as_deref().and_then(parse_time) else {
+                return false;
+            };
+            let last = last_nudge_estimate(first, r.nudges, now);
+            if now - last > chrono::Duration::hours(CATCH_UP_HOURS) {
+                return false;
+            }
+            match shown.get(&r.id).and_then(|s| parse_time(s)) {
+                Some(seen) => seen + chrono::Duration::minutes(5) < last,
+                None => true,
+            }
+        })
+        .collect()
+}
+
+fn reminder_text(r: &ReminderRow) -> &str {
+    if r.what.trim().is_empty() {
+        &r.title
+    } else {
+        &r.what
+    }
+}
+
+/// On launch: announce reminders that fired while the app was closed.
+fn catch_up(app: &AppHandle, reminders: &[ReminderRow]) {
+    let now = Utc::now();
+    let mut shown = load_shown(app);
+    let pending = catch_up_candidates(reminders, &shown, now);
+    if pending.is_empty() {
+        return;
+    }
+    if pending.len() > MAX_NOTIFICATIONS_PER_TICK {
+        let list: Vec<&str> = pending.iter().map(|r| reminder_text(r)).collect();
+        notify(
+            app,
+            &format!("{} reminders waiting", pending.len()),
+            &truncate(&list.join(" · "), BODY_MAX_CHARS),
+        );
+    } else {
+        for r in &pending {
+            notify(
+                app,
+                &format!("Reminder · {}", truncate(reminder_text(r), 60)),
+                "Still open. Open Consistent to mark it done or snooze it.",
+            );
+        }
+    }
+    let stamp = now.to_rfc3339();
+    for r in pending {
+        shown.insert(r.id.clone(), stamp.clone());
+    }
+    save_shown(app, &mut shown, now);
 }
 
 /// Poll the feed forever, notifying on anything new and notifiable.
@@ -156,12 +370,26 @@ pub fn spawn_feed_watcher(app: AppHandle) {
     app.manage(FeedCursor::default());
     tauri::async_runtime::spawn(async move {
         let mut seen: HashSet<String> = HashSet::new();
+        let mut caught_up = false;
+        let mut ticks: u32 = 0;
         loop {
             tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
 
             let Some(feed) = fetch_feed(&app).await else {
                 continue;
             };
+
+            if !caught_up || ticks.is_multiple_of(REMINDER_REFRESH_TICKS) {
+                if let Some(reminders) = fetch_reminders(&app).await {
+                    if !caught_up {
+                        catch_up(&app, &reminders);
+                        caught_up = true;
+                    }
+                    update_tray(&app, &reminders);
+                }
+            }
+            ticks = ticks.wrapping_add(1);
+
             let Some(newest) = feed.first().map(|e| e.id.clone()) else {
                 continue;
             };
@@ -175,7 +403,7 @@ pub fn spawn_feed_watcher(app: AppHandle) {
             match cursor {
                 // First successful poll only anchors the cursor — the operator
                 // doesn't want banners for everything that happened before the
-                // app was opened.
+                // app was opened. Reminders among them are the catch-up's job.
                 None => {}
                 Some(c) => {
                     let fresh: Vec<FeedEvent> = new_events_since(&feed, &c)
@@ -195,6 +423,22 @@ pub fn spawn_feed_watcher(app: AppHandle) {
                             BODY_MAX_CHARS,
                         );
                         notify(&app, &title, &body);
+                    }
+                    let fired: Vec<&str> = fresh
+                        .iter()
+                        .filter(|e| e.kind == "scheduled_task_fired")
+                        .filter_map(|e| e.task_id.as_deref())
+                        .collect();
+                    if !fired.is_empty() {
+                        let now = Utc::now();
+                        let mut shown = load_shown(&app);
+                        for id in fired {
+                            shown.insert(id.to_string(), now.to_rfc3339());
+                        }
+                        save_shown(&app, &mut shown, now);
+                        if let Some(reminders) = fetch_reminders(&app).await {
+                            update_tray(&app, &reminders);
+                        }
                     }
                     for event in fresh {
                         seen.insert(event.id);
@@ -226,7 +470,70 @@ mod tests {
             kind: kind.to_string(),
             title: "t".to_string(),
             detail: None,
+            task_id: None,
         }
+    }
+
+    fn rem(id: &str, state: &str, first: Option<DateTime<Utc>>, nudges: u32) -> ReminderRow {
+        ReminderRow {
+            id: id.to_string(),
+            what: format!("do {id}"),
+            title: String::new(),
+            state: state.to_string(),
+            first_fired_at: first.map(|t| t.to_rfc3339()),
+            nudges,
+        }
+    }
+
+    #[test]
+    fn catch_up_takes_recent_unannounced_due_reminders() {
+        let now = Utc::now();
+        let h = chrono::Duration::hours;
+        let rows = vec![
+            rem("recent", "due", Some(now - h(2)), 1),
+            rem("old", "due", Some(now - h(30)), 1),
+            rem("scheduled", "scheduled", None, 0),
+            // First fired long ago, but the 2nd follow-up was this morning.
+            rem("followed_up", "due", Some(now - h(20)), 3),
+            rem("seen", "due", Some(now - h(1)), 1),
+        ];
+        let mut shown = HashMap::new();
+        shown.insert(
+            "seen".to_string(),
+            (now - chrono::Duration::minutes(30)).to_rfc3339(),
+        );
+        let ids: Vec<&str> = catch_up_candidates(&rows, &shown, now)
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect();
+        assert_eq!(ids, ["recent", "followed_up"]);
+    }
+
+    #[test]
+    fn a_newer_nudge_than_the_last_announcement_is_shown_again() {
+        let now = Utc::now();
+        let rows = vec![rem("r", "due", Some(now - chrono::Duration::hours(3)), 2)];
+        let mut shown = HashMap::new();
+        shown.insert(
+            "r".to_string(),
+            (now - chrono::Duration::hours(3)).to_rfc3339(),
+        );
+        assert_eq!(catch_up_candidates(&rows, &shown, now).len(), 1);
+    }
+
+    #[test]
+    fn feed_events_carry_the_reminder_id() {
+        let page: FeedPage = serde_json::from_str(
+            r#"{"items":[{"id":"1","kind":"scheduled_task_fired","title":"Reminder: call mum","taskId":"t-1"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(page.items[0].task_id.as_deref(), Some("t-1"));
+    }
+
+    #[test]
+    fn tray_label_counts_due() {
+        assert_eq!(tray_label(0), "Reminders");
+        assert_eq!(tray_label(2), "Reminders (2 due)");
     }
 
     #[test]
@@ -262,6 +569,10 @@ mod tests {
         assert!(is_notifiable("heartbeat_result"));
         assert!(is_notifiable("task_overdue"));
         assert!(is_notifiable("daily_digest"));
+        assert!(is_notifiable("verification_needs_review"));
+        assert!(is_notifiable("mission_review_due"));
+        assert!(is_notifiable("connection_check_failed"));
+        assert!(is_notifiable("mission_report_ready"));
         assert!(!is_notifiable("task_created"));
         assert!(!is_notifiable("goal_loop_decision"));
     }

@@ -80,6 +80,15 @@ export function createSkill(
   });
 }
 
+/** Ask the AI to draft a skill from a plain-words idea; nothing is saved. */
+export function draftSkill(idea: string): Promise<{ name: string; description: string; body: string }> {
+  return api('/api/skills/draft', {
+    method: 'POST',
+    silent: true,
+    body: JSON.stringify({ idea })
+  });
+}
+
 export function updateSkill(
   id: string,
   patch: { description?: string; body?: string; raw?: string }

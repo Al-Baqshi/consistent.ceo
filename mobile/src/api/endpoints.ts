@@ -2,6 +2,15 @@ import { Platform } from 'react-native';
 
 import { getInstallId } from '@/lib/companion';
 import { log } from '@/lib/logger';
+import { resolveWhen } from '@/lib/when';
+import {
+  createEntityLocal,
+  deleteEntityLocal,
+  entitiesState,
+  hydrateEntities,
+  syncEntities,
+  updateEntityLocal,
+} from '@/lib/entities';
 
 import {
   APIError,
@@ -17,9 +26,14 @@ import {
   tryGateway,
 } from './client';
 import * as fx from './mock/fixtures';
+import {
+  checkRustAvailability,
+  runLocalTurnRust,
+} from '@/lib/localAgentRust';
 import type {
   Approval,
   CompanionFeed,
+  CreateReminderInput,
   DailyReview,
   Entity,
   EntityDetail,
@@ -41,10 +55,14 @@ import type {
   GatewayRuntimeStatus,
   GatewayScheduleTask,
   GatewayTaskLite,
+  LocalModelManifest,
   Mission,
   MissionStatus,
   Paginated,
   QuickAction,
+  ReminderActionInput,
+  ReminderList,
+  ReminderView,
   ReviewSection,
   RunArtifact,
   ScheduleItem,
@@ -587,6 +605,21 @@ export async function* sendMessageStream(
       'api',
       `computer ✕ capture/chat/stream — ${e instanceof APIError ? `HTTP ${e.status}` : e instanceof Error ? e.message : 'error'}`,
     );
+    // A paired gateway that can't be reached: try the on-device Rust parser
+    // before reporting failure, so reminders/notes still work offline.
+    if (!(await isDemoGateway())) {
+      const rustTurn = await runLocalTurnRust(text);
+      if (rustTurn.reminders.length > 0) {
+        const reply = `${rustTurn.text} Saved on this phone; syncs when your computer is back.`;
+        yield {
+          delta: reply,
+          done: true,
+          sessionId,
+          message: { id: nextId('fm'), role: 'assistant', text: reply, at },
+        };
+        return;
+      }
+    }
     // An HTTP status means a gateway answered and diagnosed the problem; a
     // paired gateway that didn't answer must say so. Either way a canned
     // fixture reply would read as an answer the operator's computer gave.
@@ -659,9 +692,70 @@ export async function listEntities(): Promise<Entity[]> {
   const real = await tryGateway('entities', () =>
     http.list<Record<string, unknown>>('/api/entities?limit=200'),
   );
-  if (real) return real.map(mapGatewayEntity);
-  await mockLatency();
-  return [...fx.entities];
+  if (real) {
+    const items = real.map(mapGatewayEntity);
+    await syncEntities(); // merge gateway + local, persist to cache
+    return entitiesState.items;
+  }
+  // Gateway unreachable — serve the local cache (offline entities included).
+  if (!entitiesState.loaded) await hydrateEntities();
+  return entitiesState.items;
+}
+
+/**
+ * Create or update an entity. Tries the live gateway first; if it cannot be
+ * reached, writes locally and queues for replay on the next sync.
+ */
+export async function saveEntity(input: {
+  id?: string;
+  name: string;
+  type: 'person' | 'company' | 'project' | 'mission' | 'agent' | 'file' | 'memory';
+  summary?: string;
+  stage?: string;
+  weight?: number;
+  colour?: string;
+  relatedIds?: string[];
+  pinned?: boolean;
+  clientId?: string;
+}): Promise<Entity> {
+  const real = await tryGateway('entity save', async () => {
+    if (input.id) {
+      return http.post<Entity>(`/api/entities/${encodeURIComponent(input.id)}`, input);
+    }
+    return http.post<Entity>('/api/entities', input);
+  });
+  if (real) {
+    await syncEntities();
+    return real;
+  }
+  // Offline: write locally, queue for replay.
+  if (input.id) {
+    await updateEntityLocal(input.id, input);
+    const current = entitiesState.items.find((e) => e.id === input.id);
+    if (current) return current;
+  }
+  return createEntityLocal({
+    name: input.name,
+    type: input.type,
+    summary: input.summary,
+    stage: input.stage,
+    weight: input.weight,
+    colour: input.colour,
+    relatedIds: input.relatedIds,
+    pinned: input.pinned,
+  });
+}
+
+/** Delete an entity. Tries the live gateway first; if unreachable, queues locally. */
+export async function deleteEntity(id: string): Promise<void> {
+  const real = await tryGateway('entity delete', () =>
+    http.del(`/api/entities/${encodeURIComponent(id)}`),
+  );
+  if (real !== undefined) {
+    await syncEntities();
+    return;
+  }
+  await deleteEntityLocal(id);
 }
 
 // ── Entity detail ──────────────────────────────────────────────────────
@@ -1463,6 +1557,145 @@ export async function listSchedule(): Promise<ScheduleItem[]> {
   return [...fx.scheduleItems];
 }
 
+// ── Reminders ──────────────────────────────────────────────────────────
+
+/** Minutes EAST of UTC; `getTimezoneOffset()` is west-positive. */
+export function localTzOffsetMinutes(): number {
+  return -new Date().getTimezoneOffset();
+}
+
+// Demo mode keeps its own small, mutable reminder list so actions visibly work.
+let mockReminders: ReminderView[] = fx.reminders.map((r) => ({ ...r, followUps: [...r.followUps] }));
+
+function mockReminder(id: string): ReminderView {
+  const found = mockReminders.find((r) => r.id === id);
+  if (!found) throw new APIError(`reminder ${id} → 404`, 404);
+  return found;
+}
+
+/** `GET /api/reminders?include=open|all`. */
+export async function listReminders(include: 'open' | 'all' = 'open'): Promise<ReminderList> {
+  const real = await tryGateway('reminders', () =>
+    http.get<{ items?: ReminderView[]; serverTime?: string }>(`/api/reminders?include=${include}`),
+  );
+  if (real) {
+    return { items: real.items ?? [], serverTime: real.serverTime ?? new Date().toISOString(), live: true };
+  }
+  await mockLatency();
+  const items =
+    include === 'all'
+      ? mockReminders
+      : mockReminders.filter((r) => r.state !== 'done' && r.state !== 'cancelled');
+  return { items: items.map((r) => ({ ...r })), serverTime: new Date().toISOString(), live: false };
+}
+
+/**
+ * `POST /api/reminders`. Unlike the reads, a paired gateway's failure
+ * propagates — the caller decides whether to keep the reminder on the phone.
+ */
+export async function createReminder(input: CreateReminderInput): Promise<ReminderView> {
+  const body = { ...input, tzOffsetMinutes: localTzOffsetMinutes() };
+  const real = await tryGateway('reminders create', () => http.post<ReminderView>('/api/reminders', body));
+  if (real) return real;
+  await mockLatency();
+  const fireAt =
+    input.fireAt ??
+    (input.inMinutes != null
+      ? new Date(Date.now() + input.inMinutes * 60_000).toISOString()
+      : resolveWhen(input.when).date.toISOString());
+  const entity = input.entityId ? fx.entityById(input.entityId) : undefined;
+  const created: ReminderView = {
+    id: nextId('rem'),
+    title: input.what,
+    what: input.what,
+    kind: 'reminder',
+    entityId: entity?.id ?? null,
+    entityName: entity?.name ?? null,
+    state: 'scheduled',
+    fireAt,
+    followUps: input.followUp === false ? [] : [new Date(Date.parse(fireAt) + 2 * 3_600_000).toISOString()],
+    firstFiredAt: null,
+    nudges: 0,
+    createdAt: new Date().toISOString(),
+  };
+  mockReminders = [created, ...mockReminders];
+  return { ...created };
+}
+
+/** `POST /api/reminders/{id}/action`. Snooze with no minutes is 60 server-side. */
+export async function reminderAction(id: string, input: ReminderActionInput): Promise<ReminderView> {
+  const body = { ...input, tzOffsetMinutes: localTzOffsetMinutes() };
+  const real = await tryGateway(`reminders ${input.action}`, () =>
+    http.post<ReminderView>(`/api/reminders/${encodeURIComponent(id)}/action`, body),
+  );
+  if (real) return real;
+  await mockLatency();
+  const r = mockReminder(id);
+  switch (input.action) {
+    case 'done':
+      r.state = 'done';
+      r.fireAt = null;
+      r.followUps = [];
+      break;
+    case 'cancel':
+      r.state = 'cancelled';
+      r.fireAt = null;
+      r.followUps = [];
+      break;
+    case 'snooze':
+      r.state = 'scheduled';
+      r.fireAt = new Date(Date.now() + (input.minutes ?? 60) * 60_000).toISOString();
+      break;
+    case 'delegate':
+      r.state = 'delegated';
+      r.fireAt = null;
+      r.followUps = [];
+      r.delegatedTaskId = `mock-job-${r.id}`;
+      break;
+    case 'reschedule':
+    case 'reopen':
+      r.state = 'scheduled';
+      r.fireAt = input.fireAt ?? resolveWhen(input.when).date.toISOString();
+      break;
+  }
+  return { ...r };
+}
+
+/**
+ * `POST /api/reminders/local-scheduled` — the phone will raise these exact
+ * fires itself, so the gateway skips the duplicate push.
+ */
+export async function markRemindersLocalScheduled(
+  items: { id: string; fireAt: string }[],
+): Promise<number> {
+  if (items.length === 0 || (await isDemoGateway())) return 0;
+  const res = await http.post<{ ok?: boolean; marked?: number }>('/api/reminders/local-scheduled', { items });
+  return Number(res?.marked ?? 0);
+}
+
+/** Used when the gateway can't be asked; mirrors its `GET /api/local-model`. */
+export const FALLBACK_LOCAL_MODEL: LocalModelManifest = {
+  name: 'Gemma 4 E2B',
+  mobile: {
+    file: 'gemma-4-E2B-it-Q4_K_M.gguf',
+    url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
+    approxBytes: 3_100_000_000,
+    minRamGb: 6,
+    format: 'gguf',
+  },
+};
+
+/** `GET /api/local-model`, or the built-in manifest when nobody answers. */
+export async function getLocalModel(): Promise<LocalModelManifest> {
+  try {
+    const m = await http.get<LocalModelManifest>('/api/local-model');
+    if (m?.mobile?.url && m.mobile.file) return m;
+  } catch {
+    /* offline — the built-in manifest is the same model */
+  }
+  return FALLBACK_LOCAL_MODEL;
+}
+
 // ── System / sessions ──────────────────────────────────────────────────
 
 /** A registered device that isn't a phone — i.e. something desktop-shaped. */
@@ -1741,4 +1974,11 @@ export const api = {
   listPendingSessions,
   authenticateSession,
   connectGateway,
+  listReminders,
+  createReminder,
+  reminderAction,
+  markRemindersLocalScheduled,
+  getLocalModel,
+  saveEntity,
+  deleteEntity,
 };

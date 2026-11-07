@@ -7,6 +7,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { startCompanion } from '@/lib/companion';
+import { checkRustAvailability } from '@/lib/localAgentRust';
+import { startReminders } from '@/lib/reminders';
 import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -22,6 +24,16 @@ function RootStack() {
   // Registers this device with the gateway and watches the operator feed for
   // anything worth interrupting for, while the app is foregrounded.
   useEffect(() => startCompanion(), []);
+
+  // Mirrors open reminders as local notifications so they ring with the app
+  // closed, offline, or the computer asleep.
+  useEffect(() => startReminders(), []);
+
+  // Logs whether the on-device Rust parser is linked (and its version) or the
+  // TS fallback is in use.
+  useEffect(() => {
+    checkRustAvailability().catch(() => {});
+  }, []);
 
   return (
     <>

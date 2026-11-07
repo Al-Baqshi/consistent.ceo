@@ -11,6 +11,7 @@
   import { page } from '$app/stores';
   import { API_BASE, api, getAuthToken, getTenantId, listTenants, setTenantId, type TenantSummary, type PaginatedResponse } from '$lib/api';
   import { feedKindLabel, feedKindNeedsHuman, feedKindTone } from '$lib/feedKinds';
+  import { OPEN_REMINDERS_EVENT, REMINDERS_CHANGED_EVENT, REMINDERS_HASH } from '$lib/reminders';
 
   let { children } = $props();
 
@@ -173,11 +174,27 @@
     if (typeof window === 'undefined' || !browserNotificationsEnabled || notificationPermission !== 'granted') return;
     if (inDesktopShell()) return;
     if (document.visibilityState === 'visible' && notificationsOpen) return;
-    new Notification(feedKindLabel(item.kind), {
+    const notification = new Notification(feedKindLabel(item.kind), {
       body: item.title,
       tag: `feed-${item.id}`,
       silent: true
     });
+    if (item.kind === 'scheduled_task_fired' && item.taskId) {
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+        void openRemindersPanel();
+      };
+    }
+  }
+
+  /** Bring the home Reminders panel into view, navigating home if needed. */
+  async function openRemindersPanel() {
+    if ($page.url.pathname !== '/') {
+      await goto(`/${REMINDERS_HASH}`);
+      return;
+    }
+    window.dispatchEvent(new CustomEvent(OPEN_REMINDERS_EVENT));
   }
 
   async function requestBrowserNotifications(forcePrompt = false) {
@@ -222,6 +239,9 @@
         const at = notifications.findIndex((n) => n.id === previousTopId);
         return at === -1 ? notifications : notifications.slice(0, at);
       })();
+      if (sincePreviousPoll.some((n) => n.kind === 'scheduled_task_fired')) {
+        window.dispatchEvent(new CustomEvent(REMINDERS_CHANGED_EVENT));
+      }
       const urgent = sincePreviousPoll.find((n) => feedKindNeedsHuman(n.kind));
       if (urgent) {
         sendBrowserNotification(urgent);

@@ -58,7 +58,7 @@ pub struct RemoteStatus {
     /// Same-network fallback, e.g. `http://192.168.1.20:18800`.
     pub lan_url: Option<String>,
     /// Best reachable base URL for a phone, in preference order:
-    /// serve (works anywhere) → LAN (same wifi only).
+    /// relay → serve (both work anywhere) → LAN (same Wi-Fi only).
     pub recommended_url: Option<String>,
 }
 
@@ -161,10 +161,28 @@ pub fn lan_ip() -> Option<String> {
     Some(ip.to_string())
 }
 
-/// `bind` is the address the gateway listens on. A same-Wi-Fi URL is only
-/// offered when it listens beyond loopback (docker, a server): the default
-/// desktop install binds 127.0.0.1, and a LAN address pointing at it would
-/// send the phone to a port nothing answers on.
+/// The same-Wi-Fi URL, when something actually answers on it.
+///
+/// A gateway bound beyond loopback (docker, a server) answers on every
+/// address, so its LAN address works. The default desktop install binds
+/// 127.0.0.1: a LAN address pointing at that would send the phone to a port
+/// nothing answers on, so it is offered only while the Wi-Fi listener
+/// (`wifi_access`) is actually listening — and then at the address it bound.
+pub fn lan_url_for(
+    port: u16,
+    bind: &str,
+    wifi_listener: Option<std::net::SocketAddr>,
+    lan_ip: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if crate::billing::is_loopback_bind(bind) {
+        wifi_listener.map(|addr| format!("http://{addr}"))
+    } else {
+        lan_ip().map(|ip| format!("http://{ip}:{port}"))
+    }
+}
+
+/// `bind` is the address the gateway listens on; see [`lan_url_for`] for when
+/// a same-Wi-Fi URL is offered.
 pub fn remote_status(port: u16, bind: &str) -> RemoteStatus {
     let bin = find_tailscale();
     let (running, dns) = match bin.as_deref().and_then(tailscale_status_json) {
@@ -177,11 +195,7 @@ pub fn remote_status(port: u16, bind: &str) -> RemoteStatus {
         }
         _ => None,
     };
-    let lan_url = if crate::billing::is_loopback_bind(bind) {
-        None
-    } else {
-        lan_ip().map(|ip| format!("http://{ip}:{port}"))
-    };
+    let lan_url = lan_url_for(port, bind, crate::wifi_access::listening_addr(), lan_ip);
     let relay_url = relay_public_url();
     // Preference order is reachability: a relay works from any network, a
     // tailnet from any network the operator has joined, LAN only at home.
@@ -264,11 +278,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_loopback_gateway_never_offers_a_wifi_address() {
-        // Nothing on the network can reach 127.0.0.1, so a LAN URL here would
-        // send the phone to a port nothing answers on.
+    fn a_loopback_gateway_offers_wifi_only_while_the_wifi_listener_listens() {
+        // Nothing on the network can reach 127.0.0.1, so without the Wi-Fi
+        // listener a LAN URL would send the phone to a port nothing answers on.
+        let any_ip = || Some("192.168.1.20".to_string());
+        assert_eq!(lan_url_for(18800, "127.0.0.1", None, any_ip), None);
+        assert_eq!(lan_url_for(18800, "localhost", None, any_ip), None);
+        // Tests never start the listener, so the live status agrees.
         assert_eq!(remote_status(18800, "127.0.0.1").lan_url, None);
-        assert_eq!(remote_status(18800, "localhost").lan_url, None);
+
+        // Listening: the URL is exactly where the listener bound.
+        let addr: std::net::SocketAddr = "192.168.1.20:18800".parse().unwrap();
+        assert_eq!(
+            lan_url_for(18800, "127.0.0.1", Some(addr), || None).as_deref(),
+            Some("http://192.168.1.20:18800")
+        );
+    }
+
+    #[test]
+    fn a_network_bound_gateway_offers_its_lan_address() {
+        assert_eq!(
+            lan_url_for(18800, "0.0.0.0", None, || Some("10.0.0.5".into())).as_deref(),
+            Some("http://10.0.0.5:18800")
+        );
+        assert_eq!(lan_url_for(18800, "0.0.0.0", None, || None), None);
     }
 
     #[test]

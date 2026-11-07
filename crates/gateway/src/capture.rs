@@ -55,10 +55,114 @@ pub(crate) fn entity_workspace_id(entity: &Entity) -> &str {
         .unwrap_or(DEFAULT_WORKSPACE_ID)
 }
 
-// Provider dispatch: match base_url/api_key_env hints to the right
-// LlmProvider implementation. `cfg` is only consulted when a requested CLI
-// provider turns out to be missing and a registered local lane can stand in.
+// Every LLM call the gateway makes is built here, which makes this the one
+// place the owner's AI choice is enforced: when `ai_brain` says the resolved
+// lane should run on a different brain (the one chosen on the AI page, or —
+// with nothing chosen — the first lane that can actually answer), the client
+// is that brain's, with every request pinned to its model.
 pub(crate) fn build_llm_client(
+    cfg: &AppConfig,
+    base_url: &str,
+    api_key: &str,
+    api_key_env: &str,
+) -> Box<dyn LlmProvider> {
+    let client = if let Some(brain) = crate::ai_brain::replacement_for(base_url, api_key_env) {
+        brain_client(cfg, &brain)
+    } else {
+        let client = build_llm_client_exact(cfg, base_url, api_key, api_key_env);
+        local_model_guard(base_url, api_key_env, client)
+    };
+    crate::training::maybe_trace(client)
+}
+
+/// A client for one specific brain, every request pinned to its model.
+pub(crate) fn brain_client(
+    cfg: &AppConfig,
+    brain: &crate::ai_brain::Brain,
+) -> Box<dyn LlmProvider> {
+    let api_key = resolve_llm_api_key(brain.api_key_env());
+    // Ollama may live on another host; the catalog only knows the default.
+    let base_url = if brain.provider == "ollama" {
+        crate::ai_brain::ollama_base(cfg)
+    } else {
+        brain.base_url().to_string()
+    };
+    Box::new(PinnedModelProvider {
+        inner: build_llm_client_exact(cfg, &base_url, &api_key, brain.api_key_env()),
+        model: brain.model.clone(),
+    })
+}
+
+// A call that lands on Ollama asking for a model that is not installed (the
+// TOML's `gemma4:latest` on a machine that never pulled it) would 404; swap
+// in an installed chat model instead.
+fn local_model_guard(
+    base_url: &str,
+    api_key_env: &str,
+    client: Box<dyn LlmProvider>,
+) -> Box<dyn LlmProvider> {
+    if crate::ai_brain::lane_of(base_url, api_key_env) != Some("ollama") {
+        return client;
+    }
+    let Some(detection) = crate::ai_brain::detection() else {
+        return client;
+    };
+    if detection.ollama_models.is_empty() {
+        return client;
+    }
+    let fallback = crate::ai_brain::chosen()
+        .filter(|b| b.provider == "ollama")
+        .map(|b| b.model)
+        .unwrap_or_else(|| crate::ai_brain::preferred_local_model(&detection.ollama_models));
+    Box::new(InstalledModelGuard {
+        inner: client,
+        installed: detection.ollama_models,
+        fallback,
+    })
+}
+
+struct InstalledModelGuard {
+    inner: Box<dyn LlmProvider>,
+    installed: Vec<String>,
+    fallback: String,
+}
+
+impl InstalledModelGuard {
+    fn fix(&self, request: &mut CompletionRequest) {
+        let wanted = request.model.trim();
+        let present = self
+            .installed
+            .iter()
+            .any(|m| m == wanted || m.strip_suffix(":latest") == Some(wanted));
+        if !present {
+            request.model = self.fallback.clone();
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for InstalledModelGuard {
+    async fn complete(&self, mut request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+        self.fix(&mut request);
+        self.inner.complete(request).await
+    }
+
+    async fn stream_complete(&self, mut request: CompletionRequest) -> anyhow::Result<TokenStream> {
+        self.fix(&mut request);
+        self.inner.stream_complete(request).await
+    }
+
+    fn provider_name(&self) -> &'static str {
+        self.inner.provider_name()
+    }
+}
+
+// Provider dispatch: match base_url/api_key_env hints to the right
+// LlmProvider implementation, with no brain substitution — the connection
+// test uses this directly, since testing a provider must call that provider.
+// `cfg` is only consulted when a requested CLI provider turns out to be
+// missing and a registered local lane can stand in.
+pub(crate) fn build_llm_client_exact(
     cfg: &AppConfig,
     base_url: &str,
     api_key: &str,
@@ -568,7 +672,37 @@ pub(crate) async fn resolve_operations_llm(
 ) -> Option<ResolvedOperationsLlm> {
     let (preferred_provider, preferred_model) =
         operations_capture_preferences(config, control).await;
-    resolve_llm_for_preference(config, control, &preferred_provider, &preferred_model).await
+    // The AI the owner connected on the AI page answers, while it works.
+    if let Some(brain) =
+        crate::ai_brain::chosen().filter(|b| Some(b) == crate::ai_brain::effective().as_ref())
+    {
+        return Some(resolved_brain(
+            &brain,
+            &preferred_provider,
+            &preferred_model,
+        ));
+    }
+    match resolve_llm_for_preference(config, control, &preferred_provider, &preferred_model).await {
+        Some(resolved) => Some(resolved),
+        // Nothing configured resolves: whatever this computer can run.
+        None => crate::ai_brain::effective()
+            .map(|brain| resolved_brain(&brain, &preferred_provider, &preferred_model)),
+    }
+}
+
+fn resolved_brain(
+    brain: &crate::ai_brain::Brain,
+    preferred_provider: &str,
+    preferred_model: &str,
+) -> ResolvedOperationsLlm {
+    ResolvedOperationsLlm {
+        provider: brain.provider.clone(),
+        model: brain.model.clone(),
+        base_url: brain.base_url().to_string(),
+        api_key_env: brain.api_key_env().to_string(),
+        preferred_provider: preferred_provider.to_string(),
+        preferred_model: preferred_model.to_string(),
+    }
 }
 
 pub(crate) async fn resolve_llm_for_preference(
@@ -920,6 +1054,19 @@ pub async fn commit_capture(
                     })
                 })
                 .ok_or(StatusCode::BAD_REQUEST)?;
+            let task_kind = normalize_commit_task_kind(req.task_kind.as_deref());
+            // A captured reminder with no fire time never fires. Find the time
+            // in what was typed, else default to tomorrow morning.
+            let remind_at = (task_kind == "reminder").then(|| {
+                let text = format!(
+                    "{} {}",
+                    title,
+                    req.draft.task_body.as_deref().unwrap_or_default()
+                );
+                let now = chrono::Utc::now();
+                crate::reminders::find_when_in_text(&text, now, None)
+                    .unwrap_or_else(|| crate::reminders::tomorrow_morning(now, None))
+            });
             let body = CreateTaskRequest {
                 title,
                 dept: None,
@@ -928,15 +1075,15 @@ pub async fn commit_capture(
                 mission_id: req.mission_id.clone(),
                 priority: None,
                 requires_human_approval: None,
-                task_kind: Some(normalize_commit_task_kind(req.task_kind.as_deref())),
+                task_kind: Some(task_kind),
                 content: req.draft.task_body.clone(),
                 director_id: Some(DEFAULT_CAPTURE_DIRECTOR_ID.to_string()),
                 agent_id: Some(DEFAULT_CAPTURE_AGENT_ID.to_string()),
                 connection_id: None,
                 external_source: None,
                 external_id: None,
-                metadata: None,
-                due_at: None,
+                metadata: remind_at.map(|d| crate::reminders::schedule_metadata(d, None)),
+                due_at: remind_at.map(|d| d.to_rfc3339()),
             };
             let task = internal_create_task(control, workspace_id, principal_id, body).await?;
             Ok(CaptureCommitResponse {

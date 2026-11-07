@@ -70,6 +70,16 @@ fn allowed_domains() -> Option<Vec<String>> {
     (!list.is_empty()).then_some(list)
 }
 
+/// Whether a host is one the agent may never use, whatever an entity allows: exactly or as a
+/// subdomain. Shared with the site list's validation, so a person is told at the moment they type
+/// `paypal.com` rather than after a task quietly fails.
+pub fn always_denied(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    ALWAYS_DENIED
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
 fn tool_descriptor(tool: &BrowserTool) -> Value {
     json!({
         "name": tool.name(),
@@ -164,9 +174,12 @@ pub async fn handle_request(tool: &Arc<BrowserTool>, req: &Value) -> Option<Valu
 /// Serve MCP on stdio until stdin closes.
 pub async fn serve() -> anyhow::Result<()> {
     let mut tool = BrowserTool::new(
-        // Never attach to the operator's own Chrome via CDP here: a debug port
-        // on a signed-in profile is credential theft waiting to happen. The
-        // dedicated profile is set through the environment instead.
+        // No endpoint is passed in code, and never the operator's own Chrome: a
+        // debug port on the profile that holds everything is credential theft
+        // waiting to happen. The one endpoint that can arrive, through
+        // `CONSISTENT_WORLD_BROWSER_CDP_URL`, is the dedicated Consistent browser's,
+        // set by the executor (see `browser_manager`). The dedicated profile
+        // for a self-launched Chrome is set through the environment too.
         None,
         allowed_domains(),
         denied_domains(),
@@ -205,22 +218,40 @@ pub async fn serve() -> anyhow::Result<()> {
 /// The `--mcp-config` payload handed to a `claude` CLI run that is allowed to
 /// drive the browser. Points back at this binary's own subcommand, so there is
 /// nothing extra to install.
+///
+/// `cdp_url` is the Consistent browser's debugging endpoint: when present the server drives that
+/// window (and `evaluate` is off, see `BrowserTool`); when absent it launches its own Chrome on
+/// the profile as before. `allowed_domains` is the entity's site list and becomes the allowlist.
 pub fn mcp_config_json(
     binary: &str,
     profile_dir: &str,
     artifact_dir: &str,
     headless: bool,
+    cdp_url: Option<&str>,
+    allowed_domains: &[String],
 ) -> Value {
+    let mut env = serde_json::Map::new();
+    env.insert("CONSISTENT_WORLD_BROWSER_PROFILE_DIR".into(), json!(profile_dir));
+    env.insert("CONSISTENT_WORLD_BROWSER_ARTIFACT_DIR".into(), json!(artifact_dir));
+    env.insert(
+        "CONSISTENT_WORLD_BROWSER_HEADLESS".into(),
+        json!(if headless { "1" } else { "0" }),
+    );
+    if let Some(url) = cdp_url {
+        env.insert("CONSISTENT_WORLD_BROWSER_CDP_URL".into(), json!(url));
+    }
+    if !allowed_domains.is_empty() {
+        env.insert(
+            "CONSISTENT_WORLD_BROWSER_ALLOWED_DOMAINS".into(),
+            json!(allowed_domains.join(",")),
+        );
+    }
     json!({
         "mcpServers": {
             "browser": {
                 "command": binary,
                 "args": ["mcp-browser"],
-                "env": {
-                    "CONSISTENT_WORLD_BROWSER_PROFILE_DIR": profile_dir,
-                    "CONSISTENT_WORLD_BROWSER_ARTIFACT_DIR": artifact_dir,
-                    "CONSISTENT_WORLD_BROWSER_HEADLESS": if headless { "1" } else { "0" },
-                },
+                "env": env,
             }
         }
     })
@@ -333,8 +364,13 @@ mod tests {
             "/tmp/profile",
             "/tmp/artifacts/run-1",
             false,
+            None,
+            &[],
         );
         let server = &cfg["mcpServers"]["browser"];
+        // Without the Consistent browser or a site list, neither key is set.
+        assert!(server["env"].get("CONSISTENT_WORLD_BROWSER_CDP_URL").is_none());
+        assert!(server["env"].get("CONSISTENT_WORLD_BROWSER_ALLOWED_DOMAINS").is_none());
         assert_eq!(server["command"], "/usr/local/bin/consistent-world");
         assert_eq!(server["args"][0], "mcp-browser");
         assert_eq!(server["env"]["CONSISTENT_WORLD_BROWSER_HEADLESS"], "0");
@@ -346,5 +382,30 @@ mod tests {
             server["env"]["CONSISTENT_WORLD_BROWSER_ARTIFACT_DIR"],
             "/tmp/artifacts/run-1"
         );
+    }
+
+    #[test]
+    fn a_run_in_the_consistent_browser_carries_its_endpoint_and_the_entitys_sites() {
+        let cfg = mcp_config_json(
+            "/bin/cw",
+            "/tmp/p",
+            "/tmp/a",
+            false,
+            Some("http://127.0.0.1:41234"),
+            &["github.com".to_string(), "x.com".to_string()],
+        );
+        let env = &cfg["mcpServers"]["browser"]["env"];
+        assert_eq!(env["CONSISTENT_WORLD_BROWSER_CDP_URL"], "http://127.0.0.1:41234");
+        assert_eq!(env["CONSISTENT_WORLD_BROWSER_ALLOWED_DOMAINS"], "github.com,x.com");
+    }
+
+    #[test]
+    fn the_always_denied_list_matches_subdomains_but_not_lookalikes() {
+        assert!(always_denied("paypal.com"));
+        assert!(always_denied("WWW.PayPal.com"));
+        assert!(always_denied("checkout.stripe.com"));
+        assert!(!always_denied("notpaypal.com"));
+        assert!(!always_denied("paypal.com.example.org"));
+        assert!(!always_denied("github.com"));
     }
 }

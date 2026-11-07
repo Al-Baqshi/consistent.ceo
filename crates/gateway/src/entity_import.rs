@@ -533,10 +533,46 @@ pub async fn start_analysis(
     let job_for_task = job_id.clone();
     tokio::spawn(async move {
         let outcome = match source {
-            ImportSource::Local(path) => {
-                analyze_local(
+            ImportSource::Local(path) if local_agent_is_the_brain() => {
+                let agentic = analyze_local(
                     control.clone(),
                     &job_for_task,
+                    path.clone(),
+                    name_hint.as_deref(),
+                    &links,
+                    context.as_ref(),
+                )
+                .await;
+                match agentic {
+                    Ok(draft) => Ok(draft),
+                    // A spent usage window or a session that died is no reason
+                    // to fail the import: read the folder here and ask the
+                    // active AI, which may well be a model that still answers.
+                    Err(agent_error) => {
+                        tracing::warn!(error = %agent_error, "agentic folder analysis failed; reading the folder directly");
+                        analyze_local_snapshot(
+                            control.clone(),
+                            config,
+                            ledger,
+                            &workspace_id,
+                            path,
+                            name_hint.as_deref(),
+                            &links,
+                            context.as_ref(),
+                        )
+                        .await
+                        .map_err(|snapshot_error| {
+                            format!("{agent_error} (A direct read also failed: {snapshot_error})")
+                        })
+                    }
+                }
+            }
+            ImportSource::Local(path) => {
+                analyze_local_snapshot(
+                    control.clone(),
+                    config,
+                    ledger,
+                    &workspace_id,
                     path,
                     name_hint.as_deref(),
                     &links,
@@ -615,6 +651,8 @@ fn seed_draft_from_entity(draft: &mut EntityImportDraft, entity: &Entity) {
     );
     fill(&mut draft.setup.primary_email, &entity.setup.primary_email);
     fill(&mut draft.setup.repo_path, &entity.setup.repo_path);
+    fill(&mut draft.setup.repo_url, &entity.setup.repo_url);
+    fill(&mut draft.setup.website_url, &entity.setup.website_url);
     fill(&mut draft.setup.backend_stack, &entity.setup.backend_stack);
     fill(
         &mut draft.setup.frontend_stack,
@@ -659,6 +697,8 @@ fn draft_schema_instructions() -> &'static str {
     "primaryGoal": "one sentence",
     "successCriteria": "what success looks like",
     "primaryDomain": "domain name if one is evident, else null",
+    "repoUrl": "the hosted repository URL (e.g. https://github.com/owner/name) if evident, else null",
+    "websiteUrl": "the live website as a full URL if evident, else null",
     "backendStack": "e.g. Rust, Axum",
     "frontendStack": "e.g. SvelteKit",
     "databaseStack": "e.g. SurrealDB"
@@ -776,8 +816,204 @@ async fn analyze_remote(
     if context.text.trim().is_empty() {
         return Err(format!("{url} returned no readable content."));
     }
+    let user = format!(
+        "Name hint: {}\nSource URL: {}\nSource kind: {}\nTitle: {}{}{}\n\nSource text:\n{}",
+        name_hint.unwrap_or(""),
+        context.url,
+        context.kind,
+        context.title.as_deref().unwrap_or(""),
+        operator
+            .map(ImportContext::prompt_block)
+            .unwrap_or_default(),
+        links_block(links),
+        context.text.chars().take(9000).collect::<String>()
+    );
+    let raw = draft_with_operations_llm(
+        &control,
+        &config,
+        ledger.as_ref(),
+        workspace_id,
+        "You are onboarding an existing project into an operations platform from its published source material.",
+        user,
+    )
+    .await?;
+    let mut draft =
+        parse_import_draft(&raw).unwrap_or_else(|| fallback_remote_draft(&context, name_hint));
+    if draft.setup.repo_path.is_none() && context.kind == "github_repo" {
+        draft.setup.repo_path = Some(context.url.clone());
+    }
+    if draft.name.trim().is_empty() {
+        draft.name = name_hint
+            .map(str::to_string)
+            .or_else(|| context.title.clone())
+            .unwrap_or_else(|| url.to_string());
+    }
+    draft.suggested_tasks.truncate(MAX_SUGGESTED_TASKS);
+    Ok(draft)
+}
+
+/// The folder analysis runs as an agentic Claude session only when Claude is
+/// the AI this gateway runs on (or nothing better is known) and its CLI is
+/// actually present. Otherwise the folder is read here and summarized by the
+/// active AI — before this, a machine without the `claude` CLI could not
+/// import a folder at all, whatever else it had connected.
+fn local_agent_is_the_brain() -> bool {
+    let claude_runs = crate::ai_brain::effective().is_none_or(|b| b.provider == "claude-code");
+    claude_runs && consistent_world_tools::coding_agent::locate_program("claude").is_some()
+}
+
+/// Folder analysis without an agent: a bounded read of what describes the
+/// project (README, manifests, docs, the top of the tree), handed to the
+/// operations model as one prompt.
+#[allow(clippy::too_many_arguments)]
+async fn analyze_local_snapshot(
+    control: Arc<ControlState>,
+    config: Arc<AppConfig>,
+    ledger: Option<Arc<crate::billing::CreditLedger>>,
+    workspace_id: &str,
+    path: PathBuf,
+    name_hint: Option<&str>,
+    links: &[String],
+    operator: Option<&ImportContext>,
+) -> Result<EntityImportDraft, String> {
+    let snapshot = {
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || folder_snapshot(&path))
+            .await
+            .map_err(|e| format!("Could not read the folder: {e}"))?
+    };
+    let user = format!(
+        "Name hint: {}\nProject folder: {}{}{}\n\nWhat the folder contains:\n{}",
+        name_hint.unwrap_or(""),
+        path.display(),
+        operator
+            .map(ImportContext::prompt_block)
+            .unwrap_or_default(),
+        links_block(links),
+        snapshot
+    );
+    let raw = draft_with_operations_llm(
+        &control,
+        &config,
+        ledger.as_ref(),
+        workspace_id,
+        "You are onboarding an existing project into an operations platform from a read of its project folder.",
+        user,
+    )
+    .await?;
+    let mut draft =
+        parse_import_draft(&raw).unwrap_or_else(|| fallback_local_draft(&path, name_hint));
+    draft.setup.repo_path = Some(path.display().to_string());
+    if draft.name.trim().is_empty() {
+        draft.name = name_hint
+            .map(str::to_string)
+            .unwrap_or_else(|| folder_name(&path));
+    }
+    draft.suggested_tasks.truncate(MAX_SUGGESTED_TASKS);
+    Ok(draft)
+}
+
+// Files that say what a project is, in the order worth reading them.
+const SNAPSHOT_FILES: &[&str] = &[
+    "README.md",
+    "README",
+    "readme.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "package.json",
+    "Cargo.toml",
+    "pyproject.toml",
+    "go.mod",
+    "composer.json",
+    "Gemfile",
+    "pubspec.yaml",
+    "app.json",
+    "docs/README.md",
+    "docs/VISION.md",
+    "docs/ROADMAP.md",
+    "ROADMAP.md",
+    "STATUS.md",
+];
+const SNAPSHOT_BUDGET: usize = 14_000;
+
+// The top two levels of the tree plus the descriptive files above, capped so
+// a huge repository still fits one prompt.
+fn folder_snapshot(root: &std::path::Path) -> String {
+    let mut out = String::from("Tree (top levels):\n");
+    let skip = |name: &str| {
+        name.starts_with('.')
+            || matches!(
+                name,
+                "node_modules" | "target" | "dist" | "build" | "vendor" | "__pycache__" | "Pods"
+            )
+    };
+    let mut entries: Vec<_> = std::fs::read_dir(root)
+        .map(|rd| rd.flatten().collect())
+        .unwrap_or_default();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries.iter().take(60) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if skip(&name) {
+            continue;
+        }
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+        out.push_str(&format!("- {name}{}\n", if is_dir { "/" } else { "" }));
+        if is_dir {
+            let mut kids: Vec<String> = std::fs::read_dir(entry.path())
+                .map(|rd| {
+                    rd.flatten()
+                        .map(|k| k.file_name().to_string_lossy().to_string())
+                        .filter(|k| !skip(k))
+                        .collect()
+                })
+                .unwrap_or_default();
+            kids.sort();
+            if !kids.is_empty() {
+                let shown = kids.iter().take(12).cloned().collect::<Vec<_>>().join(", ");
+                let more = kids.len().saturating_sub(12);
+                out.push_str(&format!(
+                    "    {shown}{}\n",
+                    if more > 0 {
+                        format!(" (+{more} more)")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+        }
+    }
+    for file in SNAPSHOT_FILES {
+        if out.len() >= SNAPSHOT_BUDGET {
+            break;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+            continue;
+        };
+        let room = SNAPSHOT_BUDGET.saturating_sub(out.len()).min(5_000);
+        let excerpt: String = text.chars().take(room).collect();
+        out.push_str(&format!("\n--- {file} ---\n{excerpt}\n"));
+    }
+    out
+}
+
+/// One completion through the operations model, returning the raw reply for
+/// `parse_import_draft`. Shared by the URL and folder-snapshot analyses.
+async fn draft_with_operations_llm(
+    control: &Arc<ControlState>,
+    config: &Arc<AppConfig>,
+    ledger: Option<&Arc<crate::billing::CreditLedger>>,
+    workspace_id: &str,
+    intro: &str,
+    user: String,
+) -> Result<String, String> {
+    if crate::ai_brain::detection().is_some() && !crate::ai_brain::any_ready() {
+        return Err(
+            "No AI is connected yet. Open Settings → AI and connect your subscription, a local model, or an API key, then try again."
+                .to_string(),
+        );
+    }
     let Some(resolved) = resolve_operations_llm(config.as_ref(), control.as_ref()).await else {
-        return Err("No LLM is configured for analysis. Add a provider in Settings.".to_string());
+        return Err("No AI is connected yet. Open Settings → AI to connect one.".to_string());
     };
     let api_key = credentials_resolver::resolve_llm_api_key(&resolved.api_key_env);
     let provider = build_llm_client(
@@ -789,27 +1025,13 @@ async fn analyze_remote(
     let messages = vec![
         ChatMessage {
             role: Role::System,
-            content: format!(
-                "You are onboarding an existing project into an operations platform from its published source material. {}",
-                draft_schema_instructions()
-            ),
+            content: format!("{intro} {}", draft_schema_instructions()),
             tool_calls: None,
             tool_call_id: None,
         },
         ChatMessage {
             role: Role::User,
-            content: format!(
-                "Name hint: {}\nSource URL: {}\nSource kind: {}\nTitle: {}{}{}\n\nSource text:\n{}",
-                name_hint.unwrap_or(""),
-                context.url,
-                context.kind,
-                context.title.as_deref().unwrap_or(""),
-                operator
-                    .map(ImportContext::prompt_block)
-                    .unwrap_or_default(),
-                links_block(links),
-                context.text.chars().take(9000).collect::<String>()
-            ),
+            content: user,
             tool_calls: None,
             tool_call_id: None,
         },
@@ -826,7 +1048,7 @@ async fn analyze_remote(
         .complete(request)
         .await
         .map_err(|e| format!("Analysis failed: {e}"))?;
-    if let Some(ledger) = ledger.as_ref() {
+    if let Some(ledger) = ledger {
         let calc = consistent_world_llm::cost::CostCalculator::new();
         let raw_cost = calc.calculate(
             &response.model,
@@ -837,20 +1059,7 @@ async fn analyze_remote(
             let _ = ledger.debit_for_cost(workspace_id, raw_cost).await;
         }
     }
-    let raw = response.content.unwrap_or_default();
-    let mut draft =
-        parse_import_draft(&raw).unwrap_or_else(|| fallback_remote_draft(&context, name_hint));
-    if draft.setup.repo_path.is_none() && context.kind == "github_repo" {
-        draft.setup.repo_path = Some(context.url.clone());
-    }
-    if draft.name.trim().is_empty() {
-        draft.name = name_hint
-            .map(str::to_string)
-            .or_else(|| context.title.clone())
-            .unwrap_or_else(|| url.to_string());
-    }
-    draft.suggested_tasks.truncate(MAX_SUGGESTED_TASKS);
-    Ok(draft)
+    Ok(response.content.unwrap_or_default())
 }
 
 /// Pull the JSON object out of a model reply that may be wrapped in prose or
@@ -1002,6 +1211,8 @@ pub async fn commit_import(
             override_field(&mut stored.setup.primary_domain, &setup.primary_domain);
             override_field(&mut stored.setup.primary_email, &setup.primary_email);
             override_field(&mut stored.setup.repo_path, &setup.repo_path);
+            override_field(&mut stored.setup.repo_url, &setup.repo_url);
+            override_field(&mut stored.setup.website_url, &setup.website_url);
             override_field(&mut stored.setup.backend_stack, &setup.backend_stack);
             override_field(&mut stored.setup.frontend_stack, &setup.frontend_stack);
             override_field(&mut stored.setup.database_stack, &setup.database_stack);

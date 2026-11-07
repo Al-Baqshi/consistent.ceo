@@ -13,9 +13,12 @@ import {
   ensureNotificationPermission,
   feedEventIdOf,
   feedEventShown,
+  isLocalReminder,
+  isReminderNotification,
   markFeedEventShown,
   notify,
   presentedFeedEventIds,
+  REMINDER_CATEGORY,
 } from './notifications';
 
 /**
@@ -298,6 +301,8 @@ function routeNotificationData(data: Record<string, unknown>): void {
 let handledResponseId: string | null = null;
 
 function handleNotificationResponse(response: Notifications.NotificationResponse): void {
+  // Reminder taps and action buttons belong to `reminders.ts`.
+  if (isReminderNotification(response.notification.request.content)) return;
   const id = response.notification.request.identifier;
   if (id && id === handledResponseId) return;
   handledResponseId = id;
@@ -329,6 +334,15 @@ export function newEventsSince(
   return fresh.reverse();
 }
 
+/** A reminder nudge from `/api/reminders` (other scheduled tasks share the kind). */
+function isReminderEvent(event: GatewayFeedEvent): boolean {
+  return (
+    event.kind === 'scheduled_task_fired' &&
+    !!event.taskId &&
+    /^(Reminder|Still open|Still relevant)/i.test(event.title)
+  );
+}
+
 async function tick(): Promise<void> {
   let feed: GatewayFeedEvent[];
   try {
@@ -351,12 +365,20 @@ async function tick(): Promise<void> {
   // handler recorded it) or still sitting in Notification Center from while
   // the app was in the background.
   const presented = fresh.length > 0 ? await presentedFeedEventIds() : new Set<string>();
-  const unseen = fresh.filter((e) => !feedEventShown(e.id) && !presented.has(e.id));
+  // A reminder the phone already rang for locally needs no second banner.
+  const unseen = fresh.filter(
+    (e) =>
+      !feedEventShown(e.id) &&
+      !presented.has(e.id) &&
+      !(isReminderEvent(e) && isLocalReminder(e.taskId)),
+  );
   const toShow = unseen.slice(-MAX_NOTIFICATIONS_PER_TICK);
   for (const event of toShow) {
+    const reminder = isReminderEvent(event);
     await notify(formatTitle(event), formatBody(event), {
       seconds: 1,
-      data: { ...eventLinkData(event), feedEventId: event.id },
+      data: { ...eventLinkData(event), feedEventId: event.id, ...(reminder ? { kind: 'reminder' } : {}) },
+      categoryIdentifier: reminder ? REMINDER_CATEGORY : undefined,
     });
   }
   await writeKey(CURSOR_KEY, feed[0].id);

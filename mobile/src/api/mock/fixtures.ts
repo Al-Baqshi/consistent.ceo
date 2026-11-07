@@ -6,6 +6,7 @@ import type {
   FeedMessage,
   Mission,
   QuickAction,
+  ReminderView,
   SystemHealth,
   TrustedDevice,
   Worker,
@@ -523,4 +524,52 @@ export const scheduleItems = [
   { id: 'cal-8', title: 'Launch copy review — 3 variants', at: dayAt(8, 11), kind: 'mission' as const, agentName: 'Content Producer', entityId: 'harbor', entityName: 'Harbor Coffee Co.' },
   { id: 'cal-9', title: 'Migration rehearsal', at: dayAt(-2, 10), kind: 'scheduled' as const, entityId: 'fieldnote', entityName: 'Fieldnote' },
   { id: 'cal-10', title: 'Catalog import kickoff', at: dayAt(-5, 9), kind: 'mission' as const, agentName: 'Ops Coordinator', entityId: 'harbor', entityName: 'Harbor Coffee Co.' },
+];
+
+// ── Reminders ──────────────────────────────────────────────────────────
+const ahead = (m: number) => new Date(now + m * 60_000).toISOString();
+
+export const reminders: ReminderView[] = [
+  {
+    id: 'rem-1',
+    title: 'Reminder · Call the roaster about the October lot',
+    what: 'Call the roaster about the October lot',
+    kind: 'reminder',
+    entityId: 'harbor',
+    entityName: 'Harbor Coffee Co.',
+    state: 'scheduled',
+    fireAt: ahead(45),
+    followUps: [ahead(45 + 120), ahead(45 + 24 * 60)],
+    firstFiredAt: null,
+    nudges: 0,
+    createdAt: hr(3),
+  },
+  {
+    id: 'rem-2',
+    title: 'Still open: Send Fieldnote beta invites',
+    what: 'Send Fieldnote beta invites',
+    kind: 'task',
+    entityId: 'fieldnote',
+    entityName: 'Fieldnote',
+    state: 'due',
+    fireAt: ahead(90),
+    followUps: [ahead(24 * 60)],
+    firstFiredAt: min(30),
+    nudges: 1,
+    createdAt: day(1),
+  },
+  {
+    id: 'rem-3',
+    title: 'Renew the studio insurance',
+    what: 'Renew the studio insurance',
+    kind: 'reminder',
+    entityId: null,
+    entityName: null,
+    state: 'parked',
+    fireAt: null,
+    followUps: [],
+    firstFiredAt: day(3),
+    nudges: 3,
+    createdAt: day(6),
+  },
 ];

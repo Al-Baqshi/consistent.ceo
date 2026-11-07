@@ -101,7 +101,7 @@ export default function PairScreen() {
       setPhase({
         kind: 'error',
         message: lan
-          ? `Scanned ${parsed.url}, but your computer didn't answer. Make sure this phone is on the same Wi-Fi as your computer. If iOS asked to find devices on your local network, allow it (Settings → Privacy & Security → Local Network → Consistent CEO), then tap Scan again.`
+          ? `Your computer didn't answer at ${parsed.url}. Make sure this phone is on the same Wi-Fi as your computer, and that Consistent CEO is open on it. If your computer asked whether to allow incoming connections, it needs Allow. If this phone asked to find devices on your local network, allow that too (Settings → Privacy & Security → Local Network → Consistent CEO). Then tap Scan again.`
           : `Scanned ${parsed.url}, but your computer didn't answer. Make sure Consistent CEO is open on it and this phone can reach that address, then try again.`,
       });
       return;

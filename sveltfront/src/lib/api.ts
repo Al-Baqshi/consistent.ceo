@@ -489,9 +489,105 @@ export interface PairOffer {
   /** Where the phone will reach this computer; null when nothing reaches it yet. */
   url: string | null;
   via: 'relay' | 'tailnet' | 'lan' | null;
+  /** Whether this computer can offer phone access on Wi-Fi at all. */
+  wifiAvailable?: boolean;
   payload: Record<string, unknown>;
   /** The QR as an SVG document, or null when there is no reachable address. */
   qrSvg: string | null;
+}
+
+/** Phone access on Wi-Fi: the computer answering on its home-network address. */
+export interface WifiAccess {
+  available: boolean;
+  enabled: boolean;
+  url: string | null;
+}
+
+export type BrowserStatus = {
+  chromeFound: boolean;
+  chromeName?: string | null;
+  running: boolean;
+  profileDir: string;
+  usedBefore: boolean;
+  openSites: { host: string; title: string }[];
+};
+
+/** One entity's own browser: its window, and the sites the agent may use in it. */
+export type EntityBrowser = BrowserStatus & {
+  entityId: string;
+  entityName: string;
+  sites: string[];
+};
+
+export type BrowsersOverview = {
+  chromeFound: boolean;
+  chromeName?: string | null;
+  browsers: EntityBrowser[];
+};
+
+/** Every entity's browser at a glance. */
+export function getBrowsers(): Promise<BrowsersOverview> {
+  return api<BrowsersOverview>('/api/browser', { silent: true });
+}
+
+export function getEntityBrowser(entityId: string): Promise<EntityBrowser> {
+  return api<EntityBrowser>(`/api/entities/${encodeURIComponent(entityId)}/browser`, { silent: true });
+}
+
+/** Open an entity's browser, or bring it forward. Throws with a plain reason. */
+export function openEntityBrowser(entityId: string): Promise<EntityBrowser> {
+  return api<EntityBrowser>(`/api/entities/${encodeURIComponent(entityId)}/browser/open`, {
+    method: 'POST',
+    body: '{}',
+    silent: true
+  });
+}
+
+export function closeEntityBrowser(entityId: string): Promise<EntityBrowser> {
+  return api<EntityBrowser>(`/api/entities/${encodeURIComponent(entityId)}/browser/close`, {
+    method: 'POST',
+    body: '{}',
+    silent: true
+  });
+}
+
+/** Replace the sites the agent may use in an entity's browser. */
+export function setEntityBrowserSites(entityId: string, sites: string[]): Promise<{ sites: string[] }> {
+  return api<{ sites: string[] }>(`/api/entities/${entityId}/browser-sites`, {
+    method: 'PUT',
+    body: JSON.stringify({ sites }),
+    silent: true
+  });
+}
+
+export type RemoteStatus = {
+  relayUrl?: string | null;
+  tailscaleInstalled: boolean;
+  tailscaleRunning: boolean;
+  tailscaleDnsName?: string | null;
+  serveUrl?: string | null;
+  lanUrl?: string | null;
+  recommendedUrl?: string | null;
+};
+
+export function getRemoteStatus(): Promise<RemoteStatus> {
+  return api<RemoteStatus>('/api/remote/status', { silent: true });
+}
+
+/** Turn on remote access (Tailscale serve) for this computer; throws with a plain reason. */
+export function setupRemoteAccess(): Promise<RemoteStatus> {
+  return api<RemoteStatus>('/api/remote/setup', { method: 'POST', body: '{}', silent: true });
+}
+
+export function getWifiAccess() {
+  return api<WifiAccess>('/api/remote/wifi', { silent: true });
+}
+
+export function setWifiAccess(enabled: boolean) {
+  return api<WifiAccess>('/api/remote/wifi', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled })
+  });
 }
 
 /** A phone that scanned the code and is waiting for Allow. */
@@ -882,6 +978,86 @@ export async function deleteScheduledTask(id: string): Promise<void> {
   await api<void>(`/api/schedule/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+// ─── Reminders (gateway `reminders_api.rs`) ─────────────────────────────────
+
+export type ReminderState = 'scheduled' | 'due' | 'parked' | 'delegated' | 'done' | 'cancelled';
+
+export type ReminderView = {
+  id: string;
+  title: string;
+  what: string;
+  kind: 'reminder' | 'task' | 'note' | (string & {});
+  entityId: string | null;
+  entityName: string | null;
+  state: ReminderState;
+  /** Next nudge (RFC3339); null when nothing is scheduled. */
+  fireAt: string | null;
+  followUps: string[];
+  firstFiredAt: string | null;
+  nudges: number;
+  createdAt: string;
+  /** "Do it for me": the computer task (and approval) this was handed to. */
+  delegatedTaskId?: string | null;
+  delegatedApprovalId?: string | null;
+};
+
+export type CreateReminderInput = {
+  what: string;
+  /** Natural language, e.g. "tomorrow at 9am" or "in 2 hours". */
+  when?: string;
+  inMinutes?: number;
+  fireAt?: string;
+  entityId?: string;
+  clientId?: string;
+  tzOffsetMinutes?: number;
+  followUp?: boolean;
+};
+
+export type ReminderActionInput = {
+  action: 'done' | 'cancel' | 'snooze' | 'reschedule' | 'reopen' | 'delegate';
+  /** `delegate` only: extra detail for the computer agent. */
+  instruction?: string;
+  minutes?: number;
+  when?: string;
+  fireAt?: string;
+  tzOffsetMinutes?: number;
+};
+
+export type LocalModelInfo = {
+  name: string;
+  ollama: { model: string; approxBytes: number };
+  mobile?: Record<string, unknown>;
+};
+
+/** The browser's UTC offset in minutes, east-positive, as the gateway expects. */
+export function tzOffsetMinutes(): number {
+  return -new Date().getTimezoneOffset();
+}
+
+export function listReminders(include: 'open' | 'all' = 'open') {
+  return api<{ items: ReminderView[]; serverTime: string }>(`/api/reminders?include=${include}`, {
+    silent: true
+  });
+}
+
+export function createReminder(input: CreateReminderInput) {
+  return api<ReminderView>('/api/reminders', {
+    method: 'POST',
+    body: JSON.stringify({ tzOffsetMinutes: tzOffsetMinutes(), ...input })
+  });
+}
+
+export function reminderAction(id: string, input: ReminderActionInput) {
+  return api<ReminderView>(`/api/reminders/${encodeURIComponent(id)}/action`, {
+    method: 'POST',
+    body: JSON.stringify({ tzOffsetMinutes: tzOffsetMinutes(), ...input })
+  });
+}
+
+export function getLocalModel() {
+  return api<LocalModelInfo>('/api/local-model', { silent: true });
+}
+
 // ─── Conversational entity creation ─────────────────────────────────────────
 
 export type EntityOnboardingProgress = {
@@ -1167,6 +1343,21 @@ export async function createEntityConnection(
   });
 }
 
+/**
+ * Connect GitHub to an entity with a token the gateway verifies first: the
+ * pasted one, or (when none is given) the one the GitHub CLI is signed in with.
+ */
+export async function connectGithubToken(
+  entityId: string,
+  token?: string
+): Promise<EntityConnection> {
+  return api<EntityConnection>(`/api/entities/${entityId}/connections/github/token`, {
+    method: 'POST',
+    body: JSON.stringify({ token: token?.trim() || undefined }),
+    silent: true
+  });
+}
+
 export async function updateEntityConnection(
   entityId: string,
   connectionId: string,
@@ -1277,6 +1468,8 @@ export type EntitySetup = {
   primaryDomain?: string | null;
   primaryEmail?: string | null;
   repoPath?: string | null;
+  repoUrl?: string | null;
+  websiteUrl?: string | null;
   backendStack?: string | null;
   frontendStack?: string | null;
   databaseStack?: string | null;
@@ -1653,6 +1846,8 @@ export type Entity = {
     writeAllowed?: boolean;
     execAllowed?: boolean;
   }[];
+  /** Sites the agent may use in this entity's own browser. */
+  browserSites?: string[];
   /** Set once the source has been (or is being) indexed into the knowledge base. */
   knowledgeIndex?: EntityKnowledgeIndex;
   [key: string]: unknown;
@@ -1719,6 +1914,8 @@ export type EntityImportSetup = {
   primaryDomain?: string;
   primaryEmail?: string;
   repoPath?: string;
+  repoUrl?: string;
+  websiteUrl?: string;
   backendStack?: string;
   frontendStack?: string;
   databaseStack?: string;

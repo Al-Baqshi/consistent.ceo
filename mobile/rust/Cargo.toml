@@ -1,0 +1,23 @@
+[package]
+name = "consistent-world-mobile"
+version = "1.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "cw_mobile"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+
+# The iOS static library is committed (EAS builders have no Rust toolchain), so
+# keep it small: LTO lets rustc drop the parts of std, serde and chrono the C
+# ABI never reaches, which a plain staticlib would carry whole.
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"

@@ -12,7 +12,8 @@ import {
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { api, CHAT_HISTORY_TURNS } from '@/api';
+import { api, CHAT_HISTORY_TURNS, gatewayState } from '@/api';
+import { isDemoGateway } from '@/api/client';
 import type { ChatHistoryTurn, FeedMessage, QuickAction } from '@/api';
 import {
   ApprovalCard,
@@ -27,12 +28,18 @@ import {
 import { EntityPickerSheet } from '@/components/companion/EntityPickerSheet';
 import { TalkStrip } from '@/components/companion/TalkStrip';
 import { haptics } from '@/lib/haptics';
+import { runLocalTurn } from '@/lib/localAgent';
+import { isLocalModelUsable } from '@/lib/localModel';
 import { getBoolPref, PREF_VOICE_MUTED, setBoolPref } from '@/lib/prefs';
+import { syncReminders } from '@/lib/reminders';
 import { useResponsive } from '@/lib/useResponsive';
 import { useVoiceTalk } from '@/lib/useVoiceTalk';
 import { useAppStore } from '@/store/appStore';
 import { useTheme } from '@/theme/ThemeProvider';
 import { entityColor, radius, spacing } from '@/theme/tokens';
+
+/** Caption on replies the phone's own model wrote. */
+const ON_DEVICE = 'On-device';
 
 /**
  * The conversation so far, as `CaptureChatMessage`s for the next turn: real
@@ -143,7 +150,34 @@ export default function ChatScreen() {
 
       const pendingId = `p-${Date.now()}`;
       pushMessage({ id: pendingId, role: 'assistant', text: '', at, pending: true });
+
+      // The computer is away and the on-device model is downloaded: answer here.
+      const answerOnDevice = async (targetId: string) => {
+        replaceMessage(targetId, { id: targetId, role: 'assistant', text: '', at, pending: true, meta: ON_DEVICE });
+        try {
+          const turn = await runLocalTurn(body, history);
+          replaceMessage(targetId, { id: targetId, role: 'assistant', text: turn.text, at, meta: ON_DEVICE });
+        } catch {
+          replaceMessage(targetId, {
+            id: targetId,
+            role: 'assistant',
+            text: 'Your computer is unreachable and the on-device AI couldn’t start. Try again in a moment.',
+            at,
+            meta: ON_DEVICE,
+            error: true,
+          });
+        }
+        scrollToEnd();
+      };
+      const computerAway = async () =>
+        gatewayState.reachable === false && !(await isDemoGateway()) && (await isLocalModelUsable());
+
       try {
+        if (await computerAway()) {
+          await answerOnDevice(pendingId);
+          haptics.tap();
+          return;
+        }
         const stream = api.sendMessageStream(body, {
           entityId: contextEntity?.id,
           sessionId: chatSessionId,
@@ -154,7 +188,11 @@ export default function ChatScreen() {
             setChatSessionId(chunk.sessionId);
           }
           if (chunk.done && chunk.message) {
-            replaceMessage(pendingId, chunk.message);
+            if (chunk.message.error && (await computerAway())) {
+              await answerOnDevice(pendingId);
+            } else {
+              replaceMessage(pendingId, chunk.message);
+            }
           } else {
             replaceMessage(pendingId, {
               id: pendingId,
@@ -169,6 +207,8 @@ export default function ChatScreen() {
         haptics.tap();
       } finally {
         setSending(false);
+        // A turn may have set a reminder; mirror it onto the phone's alarm clock.
+        void syncReminders();
       }
     },
     [pushMessage, replaceMessage, scrollToEnd, sending, contextEntity, setChatSessionId, consent.ensure],

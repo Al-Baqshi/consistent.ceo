@@ -1,0 +1,3 @@
+# GPU box only (Linux + NVIDIA). The Mac-side scripts need only Python 3.9+ stdlib.
+unsloth
+

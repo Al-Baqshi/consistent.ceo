@@ -19,6 +19,8 @@
     promoteCaptureToMemory,
     updateCaptureNarrative,
     attachCapture,
+    createReminder,
+    reminderAction,
     setTenantId,
     startEntityCreation,
     streamNdjson,
@@ -44,6 +46,8 @@
   import ChatMessageList, { type ChatBubble, type ChatAttachmentRef, type ChatEvidence } from '$lib/components/chat/ChatMessageList.svelte';
   import ChevronIcon from '$lib/components/icons/ChevronIcon.svelte';
   import Seo from '$lib/components/Seo.svelte';
+  import RemindersPanel from '$lib/components/RemindersPanel.svelte';
+  import { DEFAULT_WHEN, REMINDERS_CHANGED_EVENT, friendlyTime, splitReminderText } from '$lib/reminders';
 
   type DirectorView = {
     id: string;
@@ -363,6 +367,7 @@
       .filter((c) => entityPick === INBOX || c.entity_id === entityPick)
       .slice(0, 6)
   );
+  const latestReminderFire = $derived(feed.find((e) => e.kind === 'scheduled_task_fired')?.id ?? null);
   const activeTint = $derived(
     isHexColour(currentEntity?.colour) ? currentEntity!.colour! : DEFAULT_ENTITY_TINT
   );
@@ -1226,6 +1231,37 @@
     };
   }
 
+  async function runCreateReminder(): Promise<CreatedAction | null> {
+    const text = body.trim() || buildPrompt();
+    const split = splitReminderText(text);
+    const entityId = await resolveEntityId();
+    let reminder = await createReminder({
+      what: split.what,
+      when: split.when ?? DEFAULT_WHEN,
+      entityId: entityId ?? undefined
+    });
+    let defaulted = !split.when;
+    if (!reminder.fireAt) {
+      // The gateway couldn't read the phrase; a reminder with no time never fires.
+      reminder = await reminderAction(reminder.id, { action: 'reschedule', when: DEFAULT_WHEN });
+      defaulted = true;
+    }
+    const at = friendlyTime(reminder.fireAt);
+    const summary = defaulted
+      ? `I couldn't find a time in that, so I'll remind you ${at}. Change it in Reminders above.`
+      : `I'll remind you ${at}, and keep following up until it's done.`;
+    statusLine = summary;
+    addAssistantBubble(summary, 'success', reminder.entityName ?? selectedEntityLabel);
+    window.dispatchEvent(new CustomEvent(REMINDERS_CHANGED_EVENT));
+    return {
+      intent: 'reminder',
+      taskId: reminder.id,
+      entityId: reminder.entityId ?? undefined,
+      entityLabel: reminder.entityName ?? undefined,
+      summary: `Reminder: ${reminder.what}`
+    };
+  }
+
   async function runCreateMission(): Promise<CreatedAction | null> {
     const entityId = await resolveEntityId();
     if (!entityId) {
@@ -1809,6 +1845,10 @@
         createdAction = await runCreateMission();
         statusLine = 'Mission created.';
         addAssistantBubble('I turned that into a mission. Open it to review the goal and the next suggested steps.', 'success', selectedEntityLabel);
+      } else if (action === 'reminder') {
+        // Straight to the reminders API, AI on or off: the capture pipeline has
+        // no notion of "when", and a reminder with no time never fires.
+        createdAction = await runCreateReminder();
       } else if (interpretWithAi) {
         await runAiCapturePipeline(action);
       } else if (action === 'note') {
@@ -1819,13 +1859,9 @@
         createdAction = await runCreateTask('Task', 'task');
         statusLine = 'Task created.';
         addAssistantBubble('Created a task from that message.', 'success', selectedEntityLabel);
-      } else {
-        createdAction = await runCreateTask('Reminder', 'reminder');
-        statusLine = 'Reminder scheduled.';
-        addAssistantBubble('Scheduled that reminder so heartbeat can follow it up later.', 'success', selectedEntityLabel);
       }
 
-      const holdInputForAiConfirm = interpretWithAi && action !== 'mission';
+      const holdInputForAiConfirm = interpretWithAi && action !== 'mission' && action !== 'reminder';
       if (!holdInputForAiConfirm) {
         body = '';
         selectedAttachments = [];
@@ -2182,6 +2218,10 @@
           </div>
         </div>
       </div>
+    {/if}
+
+    {#if !showFirstRun}
+      <RemindersPanel entityId={entityPick === INBOX ? null : entityPick} signal={latestReminderFire} />
     {/if}
 
     <ChatMessageList chatHistory={combinedChatHistory} />

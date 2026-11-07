@@ -18,6 +18,7 @@ export { MissionRow } from './MissionRow';
 export { SwipeableRow } from './SwipeableRow';
 export type { SwipeAction } from './SwipeableRow';
 export { ReviewCard } from './ReviewCard';
+export { RemindersSection } from './RemindersSection';
 export { EntityNode } from './EntityNode';
 export { ProfileButton } from './nav/ProfileButton';
 export { BrainMap } from './BrainMap';

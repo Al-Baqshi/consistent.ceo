@@ -32,7 +32,7 @@ use crate::director_runner::{
     RECENT_BEATS_IN_PROMPT,
 };
 use crate::director_store::SurrealDirectorStore;
-use crate::entity_heartbeat_defaults::parse_beat_condition;
+use crate::entity_heartbeat_defaults::{BeatIntent, parse_beat_condition};
 use crate::heartbeat_results_store::{
     HeartbeatResult, HeartbeatResultsStore, build_canned_summary,
 };
@@ -152,6 +152,12 @@ impl LessonRecallScope {
         false
     }
 }
+
+/// Per check-in beat: the open-items fingerprint it last spoke about.
+/// In memory on purpose; a restart costs at most one repeated check-in.
+static LAST_LOOPS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(Default::default);
 
 impl HeartbeatDispatcher for ChatHeartbeatDispatcher {
     fn dispatch(&self, heartbeat: Heartbeat) -> Pin<Box<dyn Future<Output = ()> + Send>> {
@@ -291,7 +297,7 @@ impl HeartbeatDispatcher for ChatHeartbeatDispatcher {
             // Beat brief: what *this* beat is for, plus the last few beats for
             // this entity so the run compounds instead of restating itself.
             // Absent for hand-created heartbeats, which keep the generic ask.
-            let beat_brief: Option<BeatBrief> =
+            let mut beat_brief: Option<BeatBrief> =
                 match parse_beat_condition(heartbeat.condition.as_deref()) {
                     Some(cond) => {
                         let recent = match entity_id_for_record.as_deref() {
@@ -315,10 +321,46 @@ impl HeartbeatDispatcher for ChatHeartbeatDispatcher {
                             intent: cond.intent,
                             focus: cond.focus,
                             recent,
+                            open_items: Vec::new(),
                         })
                     }
                     None => None,
                 };
+
+            // The hourly check-in speaks only when there is something open and
+            // the picture changed since it last spoke, and never in quiet hours.
+            let is_loops = beat_brief.as_ref().map(|b| b.intent) == Some(BeatIntent::Loops);
+            let mut loops_fingerprint: Option<String> = None;
+            if let Some(brief) = beat_brief.as_mut().filter(|_| is_loops) {
+                let quiet = entity_for_run
+                    .entity_runtime
+                    .as_ref()
+                    .and_then(|rt| rt.quiet_hours_local.as_ref())
+                    .is_some_and(|q| {
+                        crate::notify::quiet_hours_active(q, chrono::Local::now().time())
+                    });
+                if quiet {
+                    return;
+                }
+                let crate::reminders::OpenLoops {
+                    lines,
+                    fingerprint,
+                    actionable,
+                } = crate::reminders::open_loop_lines(&entities, &entity_for_run, fired_at).await;
+                let unchanged = LAST_LOOPS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&heartbeat.id)
+                    .is_some_and(|last| *last == fingerprint);
+                // Deciding *whether* to speak is code, not the model: only an
+                // item that needs the owner this hour earns an interruption.
+                if !actionable || unchanged {
+                    tracing::debug!(heartbeat_id = %heartbeat.id, "check-in: nothing new; staying quiet");
+                    return;
+                }
+                brief.open_items = lines;
+                loops_fingerprint = Some(fingerprint);
+            }
 
             // Entity memory: the same bounded slice the agent-run path injects
             // (durable facts first, then the freshest short-term notes), so a
@@ -571,6 +613,35 @@ impl HeartbeatDispatcher for ChatHeartbeatDispatcher {
                 }
             };
 
+            let (summary, summary_is_canned) = match loops_fingerprint {
+                Some(fingerprint) => {
+                    LAST_LOOPS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(heartbeat.id.clone(), fingerprint);
+                    let said = summary.trim();
+                    let skipped = said
+                        .trim_matches(|c: char| !c.is_alphanumeric())
+                        .eq_ignore_ascii_case(crate::director_runner::SKIP_REPLY);
+                    if skipped {
+                        tracing::debug!(heartbeat_id = %heartbeat.id, "check-in: model chose to stay quiet");
+                        return;
+                    }
+                    if summary_is_canned {
+                        // No model answered: list the items plainly rather than
+                        // sending a generic "heartbeat fired" line.
+                        let items = beat_brief
+                            .as_ref()
+                            .map(|b| b.open_items.iter().take(3).cloned().collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        (format!("Still open: {}", items.join("; ")), false)
+                    } else {
+                        (summary, false)
+                    }
+                }
+                None => (summary, summary_is_canned),
+            };
+
             let result = HeartbeatResult {
                 id: format!("hbr_{}", Uuid::new_v4()),
                 heartbeat_id: heartbeat.id.clone(),
@@ -606,7 +677,11 @@ impl HeartbeatDispatcher for ChatHeartbeatDispatcher {
                 entities
                     .push_operator_feed_surface(
                         crate::state::OperatorFeedKind::HeartbeatResult,
-                        format!("{director_name} · {entity_name}"),
+                        if is_loops {
+                            "Check-in".to_string()
+                        } else {
+                            format!("{director_name} · {entity_name}")
+                        },
                         Some(result.summary.clone()),
                         result.entity_id.clone(),
                         None,
@@ -865,6 +940,101 @@ mod tests {
         };
 
         (results, directors, missions, lessons, control, heartbeat)
+    }
+
+    async fn loops_fixture(
+        runner_text: &str,
+        with_item: bool,
+    ) -> (
+        Arc<crate::heartbeat_results_store::SurrealHeartbeatResultsStore>,
+        Arc<ChatHeartbeatDispatcher>,
+        Heartbeat,
+        Arc<StubRunner>,
+    ) {
+        let (results, directors, missions, lessons, control, mut heartbeat) = fixture().await;
+        heartbeat.id = format!("hb_loops_{}", Uuid::new_v4());
+        heartbeat.condition = Some(crate::entity_heartbeat_defaults::open_loops_plan().condition());
+        if with_item {
+            let due = Utc::now() - chrono::Duration::hours(2);
+            let mut meta = crate::reminders::schedule_metadata(due, Some(0));
+            meta["reminder_nudges"] = serde_json::json!(2);
+            control.tasks.write().await.push(crate::state::Task {
+                id: "rem_photo".into(),
+                title: "Reminder: send ABT the photo".into(),
+                task_kind: Some("reminder".into()),
+                entity_id: Some("ent_qsme".into()),
+                metadata: Some(meta),
+                ..Default::default()
+            });
+        }
+        let runner = StubRunner::ok(runner_text);
+        let dispatcher = ChatHeartbeatDispatcher::new(
+            results.clone(),
+            directors,
+            missions,
+            lessons,
+            control,
+            runner.clone(),
+            None,
+            None,
+        );
+        (results, dispatcher, heartbeat, runner)
+    }
+
+    #[tokio::test]
+    async fn check_in_is_silent_with_nothing_open() {
+        let (results, dispatcher, heartbeat, _) = loops_fixture("Ping!", false).await;
+        dispatcher.dispatch(heartbeat).await;
+        assert!(
+            results
+                .list_for_entity("ent_qsme", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn check_in_speaks_once_about_open_items_then_waits_for_news() {
+        let (results, dispatcher, heartbeat, runner) =
+            loops_fixture("ABT is still waiting on the photo; send it now.", true).await;
+        dispatcher.dispatch(heartbeat.clone()).await;
+        let rows = results.list_for_entity("ent_qsme", 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let brief = runner
+            .seen_beat
+            .lock()
+            .unwrap()
+            .clone()
+            .flatten()
+            .expect("brief");
+        assert!(
+            brief
+                .open_items
+                .iter()
+                .any(|l| l.contains("send ABT the photo")),
+            "{:?}",
+            brief.open_items
+        );
+        // Same picture an hour later: no second message.
+        dispatcher.dispatch(heartbeat).await;
+        assert_eq!(
+            results.list_for_entity("ent_qsme", 10).await.unwrap().len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn check_in_honours_a_skip_from_the_model() {
+        let (results, dispatcher, heartbeat, _) = loops_fixture("SKIP", true).await;
+        dispatcher.dispatch(heartbeat).await;
+        assert!(
+            results
+                .list_for_entity("ent_qsme", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

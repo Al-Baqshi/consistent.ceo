@@ -51,9 +51,8 @@ The quickest route, and the one that needs nothing from GitHub Actions. From a
 PowerShell window in a clone of the repository:
 
 ```powershell
-git clone https://github.com/Al-Baqshi/Consistent-world.git
-cd Consistent-world
-git checkout feat/windows-desktop
+git clone https://github.com/Al-Baqshi/consistent.ceo.git
+cd consistent.ceo
 powershell -ExecutionPolicy Bypass -File desktop\scripts\build-windows.ps1 -InstallPrerequisites
 ```
 

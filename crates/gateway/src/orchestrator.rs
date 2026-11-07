@@ -103,6 +103,13 @@ fn specialized_loop_owner(task: &Task) -> Option<&'static str> {
     if task.task_kind.as_deref() == Some(crate::mission_engine::BEAT_TASK_KIND) {
         return Some("mission_engine_owned");
     }
+    // Reminders and notes are the owner's own items, not work for a director.
+    // A director picking one up would "complete" it before it ever fired.
+    if matches!(task.task_kind.as_deref(), Some("reminder") | Some("note"))
+        || crate::reminders::is_reminder_like(task)
+    {
+        return Some("reminder_engine_owned");
+    }
 
     let explicitly_executable = match task
         .metadata

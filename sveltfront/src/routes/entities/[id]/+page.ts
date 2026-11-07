@@ -85,6 +85,8 @@ export type EntitySetup = {
   primaryDomain?: string;
   primaryEmail?: string;
   repoPath?: string;
+  repoUrl?: string;
+  websiteUrl?: string;
   backendStack?: string;
   frontendStack?: string;
   databaseStack?: string;

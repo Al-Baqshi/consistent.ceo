@@ -4,6 +4,7 @@
 //! [`Tool`] trait; [`ToolRegistry`] collects them so a model can list and invoke them by name.
 
 pub mod browser;
+pub mod chrome;
 pub mod coding_agent;
 pub mod filesystem;
 pub mod http;

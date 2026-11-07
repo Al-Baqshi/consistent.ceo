@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import {
+    api,
     analyzeEntityImport,
     apiErrorStatus,
     commitEntityImport,
@@ -17,6 +18,7 @@
     entityId = null,
     entityName = '',
     initialSource = '',
+    initialSources = {},
     initialContext = {},
     onclose,
     ondone,
@@ -24,6 +26,8 @@
     entityId?: string | null;
     entityName?: string;
     initialSource?: string;
+    /** Seeds the three source fields from what the entity already holds. */
+    initialSources?: { folder?: string | null; repo?: string | null; website?: string | null };
     /** Seeds the context step from what the entity already holds. */
     initialContext?: Partial<EntityImportContext>;
     onclose: () => void;
@@ -32,8 +36,49 @@
 
   let step = $state<'source' | 'context' | 'analyzing' | 'review' | 'failed'>('source');
   // The prop is only the starting value; the operator edits freely after.
+  // The three places an entity can live, kept apart. A folder on this computer
+  // is read directly (best); the repo and the website give the analysis context.
+  const isUrl = (v: string) => /^https?:\/\//i.test(v.trim());
+  const isGithub = (v: string) => /github\.com/i.test(v);
+  // Older entities kept a repository URL in the folder field; put it where it belongs.
+  function seedSources() {
+    let f = (initialSources.folder ?? '').trim() || (initialSource && !isUrl(initialSource) ? initialSource : '');
+    let r =
+      (initialSources.repo ?? '').trim() ||
+      (initialSource && isUrl(initialSource) && isGithub(initialSource) ? initialSource : '');
+    let w =
+      (initialSources.website ?? '').trim() ||
+      (initialSource && isUrl(initialSource) && !isGithub(initialSource) ? initialSource : '');
+    if (isUrl(f)) {
+      if (isGithub(f)) r = r || f.trim();
+      else w = w || f.trim();
+      f = '';
+    }
+    return { f, r, w };
+  }
   // svelte-ignore state_referenced_locally
-  let source = $state(initialSource);
+  const seed = seedSources();
+  let folder = $state(seed.f);
+  let repo = $state(seed.r);
+  let website = $state(seed.w);
+
+  /** `owner/name` and bare `github.com/…` become real URLs; empty stays empty. */
+  function normalizeRepo(v: string): string {
+    const t = v.trim();
+    if (!t) return '';
+    if (isUrl(t)) return t;
+    if (/^github\.com\//i.test(t)) return `https://${t}`;
+    if (/^[\w.-]+\/[\w.-]+$/.test(t)) return `https://github.com/${t}`;
+    return t;
+  }
+  function normalizeWebsite(v: string): string {
+    const t = v.trim();
+    if (!t) return '';
+    return isUrl(t) ? t : `https://${t}`;
+  }
+
+  /** What the gateway fetches directly: the folder if there is one, else the repo, else the site. */
+  const source = $derived(folder.trim() || normalizeRepo(repo) || normalizeWebsite(website));
 
   const STAGE_OPTIONS = ['idea', 'prototype', 'building', 'launched', 'growing', 'maintenance'];
 
@@ -102,17 +147,33 @@
     return Object.keys(out).length > 0 ? (out as EntityImportContext) : undefined;
   }
 
+  let noAi = $state(false);
+
   function parsedLinks(): string[] {
-    return linksText
+    const extra = linksText
       .split(/[\n,]+/)
       .map((l) => l.trim())
       .filter((l) => l.startsWith('http://') || l.startsWith('https://'));
+    // The repo and the site ride along as context unless one of them is the source.
+    const companions = [normalizeRepo(repo), normalizeWebsite(website)].filter(
+      (l) => l && l !== source && isUrl(l)
+    );
+    return [...new Set([...companions, ...extra])];
   }
 
   async function startAnalysis() {
     const trimmed = source.trim();
     if (!trimmed || !contextReady) return;
     error = '';
+    // Say so up front when nothing can think, rather than after the job fails.
+    const ai = await api<{ active: unknown | null }>('/api/ai', { silent: true }).catch(() => null);
+    if (ai && !ai.active) {
+      step = 'failed';
+      noAi = true;
+      error = 'No AI is connected yet, so there is nothing to analyse with. Connect your subscription, a local model, or an API key in Settings, then try again.';
+      return;
+    }
+    noAi = false;
     step = 'analyzing';
     try {
       const res = await analyzeEntityImport({
@@ -141,6 +202,10 @@
         pollFailures = 0;
         if (job.status === 'ready' && job.draft) {
           draft = job.draft;
+          // What the operator typed is authoritative over what the analysis guessed.
+          if (folder.trim()) draft.setup.repoPath = folder.trim();
+          if (repo.trim()) draft.setup.repoUrl = normalizeRepo(repo);
+          if (website.trim()) draft.setup.websiteUrl = normalizeWebsite(website);
           step = 'review';
         } else if (job.status === 'failed') {
           step = 'failed';
@@ -224,23 +289,40 @@
       </h3>
       <p class="modal-copy">
         {entityId
-          ? 'Point at where this entity lives — a project folder on this machine (best), a GitHub URL, or a website. The engine reads it and drafts the missing fields, goals, and tasks; you review everything before it is applied.'
-          : "Point at a project folder on this machine (best), a GitHub URL, or a website. The engine reads it and drafts the entity — you review everything before it's created."}
+          ? 'Fill in whichever of these this entity has. The engine reads them and drafts the missing fields, goals, and tasks; you review everything before it is applied.'
+          : "Fill in whichever of these the project has — at least one. The engine reads them and drafts the entity; you review everything before it's created."}
       </p>
       <div class="modal-form">
-        <label>Folder path or URL
+        <label>Folder on this computer
           <input
             type="text"
-            bind:value={source}
-            placeholder="~/projects/my-app or https://github.com/you/repo"
+            bind:value={folder}
+            placeholder="~/projects/my-app"
+            onkeydown={(e) => e.key === 'Enter' && toContext()}
+          />
+          <span class="field-hint">Best: the engine reads the code itself.</span>
+        </label>
+        <label>GitHub repository
+          <input
+            type="text"
+            bind:value={repo}
+            placeholder="https://github.com/you/repo  (or you/repo)"
             onkeydown={(e) => e.key === 'Enter' && toContext()}
           />
         </label>
-        <label>Additional links (optional, one per line)
+        <label>Website
+          <input
+            type="text"
+            bind:value={website}
+            placeholder="https://your-site.com"
+            onkeydown={(e) => e.key === 'Enter' && toContext()}
+          />
+        </label>
+        <label>Other links (optional, one per line)
           <textarea
             bind:value={linksText}
             rows="2"
-            placeholder={'https://github.com/you/repo\nhttps://your-live-site.com'}
+            placeholder={'https://docs.your-site.com\nhttps://link-to-your-plan'}
           ></textarea>
         </label>
         {#if !entityId}
@@ -370,7 +452,11 @@
           <label>Domain <input type="text" bind:value={draft.setup.primaryDomain} /></label>
           <label>Success criteria <input type="text" bind:value={draft.setup.successCriteria} /></label>
         </div>
-        <label>Repo / source path <input type="text" bind:value={draft.setup.repoPath} /></label>
+        <label>Local folder <input type="text" bind:value={draft.setup.repoPath} placeholder="~/projects/my-app" /></label>
+        <div class="import-row">
+          <label>GitHub repository <input type="text" bind:value={draft.setup.repoUrl} placeholder="https://github.com/you/repo" /></label>
+          <label>Website <input type="text" bind:value={draft.setup.websiteUrl} placeholder="https://your-site.com" /></label>
+        </div>
         {#if draft.suggestedTasks.length > 0}
           <div class="import-tasks">
             <div class="import-tasks-header">Suggested tasks &amp; reminders — uncheck what you don't want</div>
@@ -403,10 +489,13 @@
         </button>
       </div>
     {:else if step === 'failed'}
-      <h3 class="modal-title">Analysis failed</h3>
+      <h3 class="modal-title">{noAi ? 'Connect an AI first' : 'Analysis failed'}</h3>
       <div class="import-error">{error}</div>
       <div class="modal-actions">
         <button class="btn-secondary" onclick={close}>Close</button>
+        {#if noAi}
+          <a class="btn-secondary" href="/settings" onclick={close}>Open AI settings</a>
+        {/if}
         <button class="btn-primary" onclick={() => { step = 'source'; error = ''; }}>Try again</button>
       </div>
     {/if}

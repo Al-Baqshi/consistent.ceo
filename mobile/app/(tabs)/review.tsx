@@ -9,6 +9,7 @@ import {
   DemoNotice,
   GlassPanel,
   MissionRow,
+  RemindersSection,
   ReviewCard,
   Screen,
   SectionHeader,
@@ -17,6 +18,7 @@ import {
 } from '@/components';
 import type { SwipeAction } from '@/components';
 import { haptics } from '@/lib/haptics';
+import { syncReminders } from '@/lib/reminders';
 import { useAppStore } from '@/store/appStore';
 import { useTheme } from '@/theme/ThemeProvider';
 import { radius, spacing } from '@/theme/tokens';
@@ -46,7 +48,7 @@ export default function TodayScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([loadReview(), loadMissions()]);
+    await Promise.all([loadReview(), loadMissions(), syncReminders()]);
     setRefreshing(false);
   };
 
@@ -86,8 +88,11 @@ export default function TodayScreen() {
 
   return (
     <Screen scroll onRefresh={onRefresh} refreshing={refreshing} title="Today" subtitle={dateLabel}>
+      {/* Reminders first: they are what this app exists to never drop, and
+          they stay usable while the computer is away. */}
+      <RemindersSection />
       {review ? (
-        <View style={{ gap: spacing[3] }}>
+        <View style={{ gap: spacing[3], marginTop: spacing[3] }}>
           {/* Headline */}
           <GlassPanel style={{ padding: spacing[5] }}>
             <Txt variant="caption" tone="accent" weight="bold" style={{ letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: spacing[2] }}>

@@ -4,8 +4,11 @@
   import { page } from '$app/stores';
   import EntityImportModal from '$lib/components/EntityImportModal.svelte';
   import EntityKnowledgeCard from '$lib/components/EntityKnowledgeCard.svelte';
+  import EntityBrowserCard from '$lib/components/EntityBrowserCard.svelte';
   import {
     applyEnrichment,
+    connectGithubToken,
+    setEntityBrowserSites,
     createEntityConnection,
     createEntityAgentRun,
     createEntityConnectionSession,
@@ -166,6 +169,19 @@
     }
   });
 
+  /** A UTC cron for "h:m on these local weekdays" (0 = Sunday; none means every day). */
+  function cronAtLocal(h: number, m: number, localDays?: number[]): string {
+    const local = new Date();
+    local.setHours(h, m, 0, 0);
+    const utcH = local.getUTCHours();
+    const utcM = local.getUTCMinutes();
+    let shift = local.getUTCDay() - local.getDay();
+    if (shift > 3) shift -= 7;
+    if (shift < -3) shift += 7;
+    const dow = localDays ? [...new Set(localDays.map((d) => (d + shift + 7) % 7))].sort((a, b) => a - b).join(',') : '*';
+    return `0 ${utcM} ${utcH} * * ${dow}`;
+  }
+
   async function submitScheduledTask(event: Event) {
     event.preventDefault();
     if (!entity) return;
@@ -254,6 +270,7 @@
     | 'command'
     | 'missions'
     | 'connections'
+    | 'browser'
     | 'records'
     | 'narrative'
     | 'strategy'
@@ -312,23 +329,113 @@
     }
   }
 
+  // ── Strategy: an interview that fills the entity in ──────────────────────
+  // One question at a time, each answer saved the moment it is given and used
+  // by every chat, mission and daily summary afterwards.
+  type InterviewQ = {
+    key: string;
+    source: 'setup' | 'entity';
+    label: string;
+    ask: string;
+    placeholder: string;
+    long?: boolean;
+  };
+  const INTERVIEW: InterviewQ[] = [
+    { key: 'whatItIs', source: 'setup', label: 'What it is', ask: 'In a sentence or two, what is this?', placeholder: 'e.g. A bakery in Wellington that sells sourdough by subscription', long: true },
+    { key: 'primaryGoal', source: 'setup', label: 'Main goal', ask: 'What is the main goal right now?', placeholder: 'e.g. Reach 50 weekly subscribers by March' },
+    { key: 'successCriteria', source: 'setup', label: 'Success', ask: 'How will you know it worked?', placeholder: 'e.g. 50 subscribers and fewer than 5% cancelling each month' },
+    { key: 'profile', source: 'entity', label: 'The story', ask: 'Who is it for, and why does it exist? A few sentences is plenty.', placeholder: 'Who it serves, what makes it different, how it got started', long: true },
+    { key: 'activeContext', source: 'entity', label: 'Right now', ask: 'What is happening right now: what are you working on or worried about?', placeholder: 'e.g. Launching the spring menu; supplier prices are up', long: true },
+    { key: 'operatingRules', source: 'entity', label: 'Ground rules', ask: 'Any rules for how I should work on it? Tone, budget, things never to do.', placeholder: 'e.g. Friendly tone. Never spend over $50 without asking. Never email customers.', long: true },
+    { key: 'websiteUrl', source: 'setup', label: 'Website', ask: 'Does it have a website? Paste the address.', placeholder: 'https://your-site.com' },
+    { key: 'repoUrl', source: 'setup', label: 'GitHub repo', ask: 'Is there a GitHub repository? Paste the address.', placeholder: 'https://github.com/you/repo' },
+    { key: 'repoPath', source: 'setup', label: 'Local folder', ask: 'Is there a folder on this computer where the work lives? Paste its path.', placeholder: '~/projects/my-app' }
+  ];
+
+  function interviewValue(q: InterviewQ): string {
+    const raw =
+      q.source === 'setup'
+        ? (entity?.setup as Record<string, unknown> | undefined)?.[q.key]
+        : (entity as unknown as Record<string, unknown> | undefined)?.[q.key];
+    const v = typeof raw === 'string' ? raw.trim() : '';
+    return v === 'unknown' ? '' : v;
+  }
+
+  let interviewPick = $state<string | null>(null);
+  let interviewSkipped = $state<string[]>([]);
+  let interviewDraft = $state('');
+  let interviewSaving = $state(false);
+  let interviewError = $state<string | null>(null);
+
+  const interviewAnswered = $derived(INTERVIEW.filter((q) => interviewValue(q) !== ''));
+  const interviewCurrent = $derived(
+    INTERVIEW.find((q) => q.key === interviewPick) ??
+      INTERVIEW.find((q) => interviewValue(q) === '' && !interviewSkipped.includes(q.key)) ??
+      null
+  );
+
+  // Load the box with the saved answer when the question changes (editing), or
+  // empty for a fresh one.
+  let interviewDraftFor = '';
+  $effect(() => {
+    const q = interviewCurrent;
+    const k = q ? `${entity?.id}:${q.key}` : '';
+    if (k !== interviewDraftFor) {
+      interviewDraftFor = k;
+      interviewDraft = q ? interviewValue(q) : '';
+      interviewError = null;
+    }
+  });
+
+  async function interviewSave() {
+    const q = interviewCurrent;
+    const text = interviewDraft.trim();
+    if (!entity || !q || !text || interviewSaving) return;
+    interviewSaving = true;
+    interviewError = null;
+    try {
+      if (q.source === 'setup') {
+        const value = q.key === 'websiteUrl' && !/^https?:\/\//i.test(text) ? `https://${text}` : text;
+        await patchEntity(entity.id, { setup: { ...(entity.setup ?? {}), [q.key]: value } });
+      } else {
+        await patchEntity(entity.id, { [q.key]: text } as never);
+      }
+      interviewPick = null;
+      await invalidateAll();
+    } catch (err) {
+      interviewError = errorMessageOf(err, 'Could not save that answer.');
+    } finally {
+      interviewSaving = false;
+    }
+  }
+
+  function interviewSkip() {
+    if (interviewCurrent && interviewPick === null) {
+      interviewSkipped = [...interviewSkipped, interviewCurrent.key];
+    }
+    interviewPick = null;
+  }
+
+  const clipText = (t: string, n = 140) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+
   const entityTabOptions: { id: EntityTab; label: string; hint?: string }[] = [
     { id: 'command', label: 'Conversation', hint: 'Setup & next actions' },
     { id: 'missions', label: 'Missions', hint: 'Create work for this entity' },
     { id: 'connections', label: 'Connections', hint: 'Integrations' },
-    { id: 'records', label: 'Records', hint: 'The ledger — customers, deals, content' },
+    { id: 'browser', label: 'Browser', hint: 'Its own browser and sign-ins' },
+    { id: 'records', label: 'Records', hint: 'Customers, orders, content from connected services' },
     { id: 'narrative', label: 'Narrative & resources', hint: 'Story, files, links' },
-    { id: 'strategy', label: 'Strategy flow', hint: 'Mirimai ID · previous / current / future' },
+    { id: 'strategy', label: 'Strategy', hint: 'Answer questions to fill this in' },
     { id: 'memory', label: 'Memory', hint: 'Short & long-term' },
-    { id: 'schedule', label: 'Schedule', hint: 'Cron jobs' },
+    { id: 'schedule', label: 'Schedule', hint: 'Jobs that repeat on a timer' },
     { id: 'activity', label: 'Activity', hint: 'Feed' },
-    { id: 'policy', label: 'Policy', hint: 'Capabilities & workspace' }
+    { id: 'policy', label: 'Permissions', hint: 'What it may do on its own' }
   ];
 
   $effect(() => {
     const tab = requestedTab;
     if (!tab) return;
-    const allowed: EntityTab[] = ['command', 'missions', 'connections', 'records', 'narrative', 'strategy', 'memory', 'schedule', 'activity', 'policy'];
+    const allowed: EntityTab[] = ['command', 'missions', 'connections', 'browser', 'records', 'narrative', 'strategy', 'memory', 'schedule', 'activity', 'policy'];
     if (allowed.includes(tab as EntityTab)) {
       entityTab = tab as EntityTab;
     }
@@ -448,7 +555,9 @@
     { key: 'successCriteria', label: 'Success', prompt: 'What does success look like?' },
     { key: 'primaryDomain', label: 'Domain', prompt: 'Does it have a primary domain?' },
     { key: 'primaryEmail', label: 'Email', prompt: 'Does it have a primary email?' },
-    { key: 'repoPath', label: 'Repo / path', prompt: 'Where is the codebase or working directory?' },
+    { key: 'repoPath', label: 'Local folder', prompt: 'Which folder on this computer holds the work?' },
+    { key: 'repoUrl', label: 'GitHub repo', prompt: 'What is the repository URL?' },
+    { key: 'websiteUrl', label: 'Website', prompt: 'What is the live website?' },
     { key: 'backendStack', label: 'Backend', prompt: 'What backend stack does it use?' },
     { key: 'frontendStack', label: 'Frontend', prompt: 'What frontend stack does it use?' },
     { key: 'databaseStack', label: 'Database', prompt: 'What database does it use?' }
@@ -541,6 +650,7 @@
     provider: 'twitter',
     label: '',
     domain: '',
+    secret: '',
     status: 'disconnected'
   });
   let githubAuthSession = $state<EntityConnectionSession | null>(null);
@@ -903,7 +1013,10 @@
         kind: connectionForm.kind,
         provider,
         label: connectionForm.label.trim() || undefined,
-        status: connectionForm.status,
+        // A key that was typed in is the credential; without one there is
+        // nothing to be connected with yet.
+        status: connectionForm.secret.trim() ? 'connected' : connectionForm.status,
+        secretValue: connectionForm.secret.trim() || undefined,
         config: connectionForm.kind === 'domain' ? { domain } : undefined
       });
       connectionForm = {
@@ -911,6 +1024,7 @@
         provider: connectionForm.provider,
         label: '',
         domain: '',
+        secret: '',
         status: 'disconnected'
       };
       await invalidateAll();
@@ -921,10 +1035,79 @@
     }
   }
 
+  // Sites the agent may use in this entity's own browser. Nothing is allowed until a
+  // person names a site; money and sign-in pages are refused by the gateway.
+  let siteInput = $state('');
+  let sitesBusy = $state(false);
+  let sitesError = $state<string | null>(null);
+  const browserSites = $derived<string[]>(entity?.browserSites ?? []);
+
+  async function saveBrowserSites(next: string[]) {
+    if (!entity || sitesBusy) return;
+    sitesBusy = true;
+    sitesError = null;
+    try {
+      await setEntityBrowserSites(entity.id, next);
+      siteInput = '';
+      await invalidateAll();
+    } catch (err) {
+      sitesError = errorMessageOf(err, 'Could not save that site.');
+    } finally {
+      sitesBusy = false;
+    }
+  }
+
+  async function addBrowserSite() {
+    const typed = siteInput.trim();
+    if (!typed) return;
+    await saveBrowserSites([...browserSites, typed]);
+  }
+
+  // GitHub without any setup: the GitHub CLI's login, or a pasted token. Both
+  // are verified against GitHub by the gateway before anything is kept.
+  let githubToken = $state('');
+  let githubTokenOpen = $state(false);
+  let githubConnectBusy = $state(false);
+  const githubConnection = $derived(
+    connections.find((c) => c.provider.toLowerCase() === 'github' && c.status === 'connected') ?? null
+  );
+
+  function errorMessageOf(err: unknown, fallback: string): string {
+    const raw = err instanceof Error ? err.message : '';
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.error === 'string') return parsed.error;
+    } catch {
+      /* not JSON */
+    }
+    return raw || fallback;
+  }
+
+  async function handleConnectGithub(withToken: boolean) {
+    if (!entity || githubConnectBusy) return;
+    if (withToken && !githubToken.trim()) return;
+    connectionError = null;
+    connectionNotice = null;
+    githubConnectBusy = true;
+    try {
+      const c = await connectGithubToken(entity.id, withToken ? githubToken : undefined);
+      githubToken = '';
+      githubTokenOpen = false;
+      connectionNotice = `GitHub connected as @${c.externalHandle ?? 'your account'}. Private repositories can now be read for this entity.`;
+      await invalidateAll();
+      entityTab = 'connections';
+    } catch (err) {
+      connectionError = errorMessageOf(err, 'Could not connect GitHub.');
+      if (!withToken && /isn.t (installed|signed in)/i.test(connectionError)) githubTokenOpen = true;
+    } finally {
+      githubConnectBusy = false;
+    }
+  }
+
   async function handleQuickConnect(kind: string, provider: string, label: string) {
     if (!entity) return;
     if (provider.toLowerCase() === 'github') {
-      await handleStartGithubAuth();
+      await handleConnectGithub(false);
       return;
     }
     if (connectionCreating) return;
@@ -1625,7 +1808,14 @@
               <EntityImportModal
                 entityId={entity.id}
                 entityName={entity.name}
-                initialSource={entity.setup?.repoPath ?? ''}
+                initialSources={{
+                  // The folder the person named, not the one the gateway made for itself.
+                  folder:
+                    entity.setup?.repoPath ||
+                    (entity.localPath && !entity.localPath.includes('/vault/workspaces/') ? entity.localPath : ''),
+                  repo: entity.setup?.repoUrl,
+                  website: entity.setup?.websiteUrl ?? entity.setup?.primaryDomain
+                }}
                 initialContext={{
                   whatItIs: entity.setup?.whatItIs,
                   primaryGoal: entity.setup?.primaryGoal ?? entity.goals,
@@ -1861,7 +2051,57 @@
       {:else if entityTab === 'connections'}
         <section class="entity-tab-panel entity-stack-card" id="panel-connections">
           <h2 class="stack-card-title">Connections</h2>
-          <p class="stack-card-sub">Simple integrations only. Connect what you actively use.</p>
+          <p class="stack-card-sub">Accounts and services this entity works through. Connect only what you actively use.</p>
+
+          <div class="connection-auth-panel github-card">
+            <div class="connection-auth-copy">
+              <strong>
+                GitHub
+                {#if githubConnection}
+                  <span class="gh-ok">Connected{githubConnection.externalHandle ? ` as @${githubConnection.externalHandle}` : ''}</span>
+                {/if}
+              </strong>
+              <span>Lets Consistent CEO read this entity's private repositories when it fills the entity in or answers questions about the code.</span>
+            </div>
+            <button type="button" class="entity-btn entity-btn-primary" onclick={() => handleConnectGithub(false)} disabled={githubConnectBusy}>
+              {githubConnectBusy ? 'Checking…' : githubConnection ? 'Reconnect with my GitHub login' : 'Use my GitHub login'}
+            </button>
+          </div>
+          <p class="stack-card-sub gh-hint">
+            Uses the GitHub CLI you are already signed in with. No setup.
+            <button type="button" class="link-btn" onclick={() => (githubTokenOpen = !githubTokenOpen)} aria-expanded={githubTokenOpen}>
+              {githubTokenOpen ? 'Hide' : 'Or paste a token'}
+            </button>
+          </p>
+          {#if githubTokenOpen}
+            <form class="connection-form gh-token-form" onsubmit={(e) => { e.preventDefault(); void handleConnectGithub(true); }}>
+              <input
+                class="entity-input"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                bind:value={githubToken}
+                placeholder="Paste a GitHub token (ghp_… or github_pat_…)"
+              />
+              <button type="submit" class="entity-btn entity-btn-primary" disabled={githubConnectBusy || !githubToken.trim()}>
+                {githubConnectBusy ? 'Checking…' : 'Check and connect'}
+              </button>
+              <a
+                class="connection-auth-link"
+                href="https://github.com/settings/tokens/new?scopes=repo,read:user&description=Consistent%20CEO"
+                target="_blank"
+                rel="noreferrer noopener"
+              >Create a token on GitHub</a>
+            </form>
+            <p class="stack-card-sub">It is checked with GitHub first, then kept in this computer's keychain, never in a file.</p>
+          {/if}
+
+          {#if connectionError}
+            <p class="mission-error">{connectionError}</p>
+          {/if}
+          {#if connectionNotice}
+            <p class="mission-notice">{connectionNotice}</p>
+          {/if}
 
           <div class="quick-connect-grid">
             <button
@@ -1872,23 +2112,8 @@
             >
               Connect OpenClaw
             </button>
-            <button
-              type="button"
-              class="entity-btn entity-btn-secondary"
-              disabled={githubAuthBusy}
-              onclick={() => handleQuickConnect('api_service', 'github', 'GitHub')}
-            >
-              Connect GitHub
-            </button>
-          </div>
-
-          <div class="connection-auth-panel">
-            <div class="connection-auth-copy">
-              <strong>GitHub source access</strong>
-              <span>Authorize Consistent CEO in GitHub, then private repo links pasted in chat can build entity context.</span>
-            </div>
-            <button type="button" class="entity-btn entity-btn-primary" onclick={handleStartGithubAuth} disabled={githubAuthBusy}>
-              {githubAuthBusy ? 'Starting…' : 'Authorize GitHub'}
+            <button type="button" class="entity-btn entity-btn-ghost" onclick={handleStartGithubAuth} disabled={githubAuthBusy}>
+              {githubAuthBusy ? 'Starting…' : 'Sign in to GitHub in the browser'}
             </button>
           </div>
 
@@ -1916,6 +2141,9 @@
             </div>
           {/if}
 
+          <details class="other-conn">
+            <summary>Add another service</summary>
+            <p class="stack-card-sub">Pick what it is, name the provider, and add its key if it has one. Domains are proven by hosting a file; see Verify below once added.</p>
           <form class="connection-form" onsubmit={handleCreateConnection}>
           <select class="entity-input mission-select" bind:value={connectionForm.kind}>
             <option value="social_account">Social</option>
@@ -1930,16 +2158,21 @@
             <input class="entity-input" bind:value={connectionForm.domain} placeholder="domain (example.com)" />
           {/if}
           <input class="entity-input" bind:value={connectionForm.label} placeholder="label (optional)" />
+          {#if connectionForm.kind !== 'domain'}
+            <input
+              class="entity-input"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              bind:value={connectionForm.secret}
+              placeholder="API key or token (optional, kept in your keychain)"
+            />
+          {/if}
           <button type="submit" class="entity-btn entity-btn-primary mission-submit" disabled={connectionCreating}>
             {connectionCreating ? 'Adding…' : 'Add connection'}
           </button>
           </form>
-        {#if connectionError}
-          <p class="mission-error">{connectionError}</p>
-        {/if}
-        {#if connectionNotice}
-          <p class="mission-notice">{connectionNotice}</p>
-        {/if}
+          </details>
         {#if connectionGroups.length === 0}
           <p class="empty-foundation">No connections yet — add one above.</p>
         {:else}
@@ -2062,18 +2295,70 @@
           </div>
         {/if}
         </section>
+      {:else if entityTab === 'browser'}
+        <section class="entity-tab-panel entity-stack-card" id="panel-browser">
+          <h2 class="stack-card-title">Browser</h2>
+          <p class="stack-card-sub">
+            {entity.name}’s own browser, the sites Consistent CEO may use in it, and the accounts you sign in to there.
+          </p>
+          {#key entity.id}
+            <EntityBrowserCard entityId={entity.id} entityName={entity.name} />
+          {/key}
+          <div class="resource-item browser-sites">
+            <div class="resource-label">Sites the agent may use</div>
+            <p class="resource-meta">
+              When Consistent CEO works in {entity.name}’s browser, it may only use these sites (and their
+              subdomains). Nothing is allowed until you add one. Banks, payments and sign-in pages are always refused.
+              You can still visit anything yourself.
+            </p>
+            {#if browserSites.length > 0}
+              <ul class="site-chips">
+                {#each browserSites as site (site)}
+                  <li class="site-chip">
+                    <span>{site}</span>
+                    <button
+                      type="button"
+                      class="site-x"
+                      aria-label={`Remove ${site}`}
+                      disabled={sitesBusy}
+                      onclick={() => saveBrowserSites(browserSites.filter((x) => x !== site))}
+                    >×</button>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="empty-foundation">No sites yet, so browser tasks for this entity will wait.</p>
+            {/if}
+            <form class="site-form" onsubmit={(e) => { e.preventDefault(); void addBrowserSite(); }}>
+              <input
+                class="entity-input"
+                type="text"
+                bind:value={siteInput}
+                placeholder="x.com"
+                autocomplete="off"
+                spellcheck="false"
+                aria-label="Add a site"
+              />
+              <button type="submit" class="entity-btn entity-btn-primary" disabled={sitesBusy || !siteInput.trim()}>
+                {sitesBusy ? 'Saving…' : 'Add site'}
+              </button>
+            </form>
+            {#if sitesError}<p class="mission-error">{sitesError}</p>{/if}
+          </div>
+        </section>
       {:else if entityTab === 'records'}
         <section class="entity-tab-panel entity-stack-card" id="panel-records">
           <h2 class="stack-card-title">Records</h2>
           <p class="stack-card-sub">
-            What this entity actually has, sourced from wherever it lives — a CRM, a spreadsheet, a site.
-            Every row keeps where it came from and when it was last confirmed.
+            Records are the real-world facts about this entity: customers, orders, deals, posts. They are
+            pulled in from services you connect (a shop, a CRM, a spreadsheet), never typed by hand, and
+            every row remembers where it came from and when it was last confirmed.
           </p>
 
           {#if recordGroups.length === 0}
             <p class="empty-foundation">
-              No records yet. Once a source is connected and synced, its customers, deals, content and
-              accounts land here — see "Records" in the integrations doc.
+              Nothing here yet. Connect a service in the Connections tab and, once it syncs, its customers,
+              orders and content show up here. If you do not run a shop or a CRM, you can ignore this tab.
             </p>
           {:else}
             {#each recordGroups as group}
@@ -2135,8 +2420,20 @@
         </section>
       {:else if entityTab === 'policy'}
         <section class="entity-tab-panel entity-stack-card" id="panel-policy">
-        <h2 class="stack-card-title">Execution policy</h2>
-        <p class="stack-card-sub">Stored on the entity (when set).</p>
+        <h2 class="stack-card-title">Permissions</h2>
+        <p class="stack-card-sub">
+          What Consistent CEO may do for this entity on its own, what always waits for your approval, and
+          which folder it may work in. The defaults are safe. Change them only to loosen or tighten things.
+        </p>
+        <div class="resource-item">
+          <div class="resource-label">Sites the browser may use</div>
+          <p class="resource-meta">
+            {browserSites.length > 0
+              ? `${browserSites.length} site${browserSites.length === 1 ? '' : 's'} allowed in ${entity.name}’s browser.`
+              : `No sites allowed in ${entity.name}’s browser yet.`}
+            Set them in the <button type="button" class="link-btn" onclick={() => (entityTab = 'browser')}>Browser</button> tab.
+          </p>
+        </div>
         {#if entity.executionPolicies && (entity.executionPolicies.allowedCapabilities?.length || entity.executionPolicies.approvalRequiredCapabilities?.length || entity.executionPolicies.allowedExecutionLevels?.length)}
           <div class="resource-item">
             <div class="resource-meta"><strong>Allowed capabilities:</strong> {entity.executionPolicies.allowedCapabilities?.join(', ') ?? '—'}</div>
@@ -2144,7 +2441,7 @@
             <div class="resource-meta"><strong>Approval-required:</strong> {entity.executionPolicies.approvalRequiredCapabilities?.join(', ') ?? '—'}</div>
           </div>
         {:else}
-          <p class="empty-foundation">No capability overrides on this entity.</p>
+          <p class="empty-foundation">Using the default permissions: nothing risky happens without asking you first.</p>
         {/if}
         <div class="resource-item">
           <div class="resource-label">Workspace</div>
@@ -2217,32 +2514,93 @@
         </section>
       {:else if entityTab === 'strategy'}
         <section class="entity-tab-panel entity-stack-card" id="panel-strategy">
-          <h2 class="stack-card-title">Strategy flow · Mirimai ID</h2>
+          <h2 class="stack-card-title">Strategy</h2>
           <p class="stack-card-sub">
-            Mermaid source for where this entity started, where it is, and where it is heading.
-            Open <code>docs/diagrams/</code> `.mmd` files in Cursor for full preview.
+            Answer a few questions and {entity.name} fills itself in. Each answer is saved straight away
+            and used by every chat, mission and daily summary from then on.
           </p>
-          {#if entity.flowDiagrams?.updatedAt}
-            <p class="resource-meta">Last updated: {entity.flowDiagrams.updatedAt}</p>
-          {/if}
-          {#each [
-            { key: 'current', label: 'Current (as-built)', value: entity.flowDiagrams?.current },
-            { key: 'future', label: 'Future (target)', value: entity.flowDiagrams?.future },
-            { key: 'previous', label: 'Previous (archive)', value: entity.flowDiagrams?.previous }
-          ] as slot (slot.key)}
-            <details class="section-card" open={slot.key === 'current'}>
-              <summary class="section-summary">
-                <span class="section-title">{slot.label}</span>
-              </summary>
-              <div class="section-body">
-                {#if slot.value}
-                  <pre class="mirimai-block">{slot.value}</pre>
+
+          <div class="iv" aria-label="Interview">
+            <div class="iv-progress" role="progressbar" aria-valuemin="0" aria-valuemax={INTERVIEW.length} aria-valuenow={interviewAnswered.length}>
+              <span class="iv-bar"><span style="width: {(interviewAnswered.length / INTERVIEW.length) * 100}%"></span></span>
+              <span class="iv-count">{interviewAnswered.length} of {INTERVIEW.length} answered</span>
+            </div>
+
+            {#if interviewCurrent}
+              <div class="iv-card">
+                <h3 class="iv-ask">{interviewCurrent.ask}</h3>
+                {#if interviewCurrent.long}
+                  <textarea class="entity-input" rows="4" bind:value={interviewDraft} placeholder={interviewCurrent.placeholder}></textarea>
                 {:else}
-                  <p class="empty-foundation">No Mirimai ID for this slot yet.</p>
+                  <input
+                    class="entity-input"
+                    type="text"
+                    bind:value={interviewDraft}
+                    placeholder={interviewCurrent.placeholder}
+                    onkeydown={(e) => e.key === 'Enter' && interviewSave()}
+                  />
                 {/if}
+                {#if interviewError}<p class="mission-error">{interviewError}</p>{/if}
+                <div class="iv-actions">
+                  <button type="button" class="entity-btn entity-btn-primary" onclick={interviewSave} disabled={interviewSaving || !interviewDraft.trim()}>
+                    {interviewSaving ? 'Saving…' : interviewPick ? 'Save' : 'Save and next'}
+                  </button>
+                  <button type="button" class="entity-btn entity-btn-ghost" onclick={interviewSkip}>
+                    {interviewPick ? 'Cancel' : 'Skip for now'}
+                  </button>
+                </div>
               </div>
-            </details>
-          {/each}
+            {:else}
+              <p class="iv-done">
+                {interviewSkipped.length > 0
+                  ? 'That is everything you wanted to answer. Skipped questions come back if you reload this page.'
+                  : 'All answered. Change any of them below whenever things change.'}
+              </p>
+            {/if}
+
+            {#if interviewAnswered.length > 0}
+              <ul class="iv-list">
+                {#each interviewAnswered as q (q.key)}
+                  <li>
+                    <span class="iv-label">{q.label}</span>
+                    <span class="iv-value">{clipText(interviewValue(q))}</span>
+                    <button type="button" class="link-btn" onclick={() => (interviewPick = q.key)}>Edit</button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+
+          <details class="section-card">
+            <summary class="section-summary"><span class="section-title">Strategy diagrams (optional)</span></summary>
+            <div class="section-body">
+              <p class="stack-card-sub">
+                Flow charts of where this entity started, where it stands and where it is heading, as Mermaid text.
+                Open the <code>.mmd</code> files in <code>docs/diagrams/</code> in an editor for a preview.
+              </p>
+          {#if entity.flowDiagrams?.updatedAt}
+                <p class="resource-meta">Last updated: {entity.flowDiagrams.updatedAt}</p>
+              {/if}
+              {#each [
+                { key: 'current', label: 'Current (as-built)', value: entity.flowDiagrams?.current },
+                { key: 'future', label: 'Future (target)', value: entity.flowDiagrams?.future },
+                { key: 'previous', label: 'Previous (archive)', value: entity.flowDiagrams?.previous }
+              ] as slot (slot.key)}
+                <details class="section-card" open={slot.key === 'current'}>
+                  <summary class="section-summary">
+                    <span class="section-title">{slot.label}</span>
+                  </summary>
+                  <div class="section-body">
+                    {#if slot.value}
+                      <pre class="mirimai-block">{slot.value}</pre>
+                    {:else}
+                      <p class="empty-foundation">No Mirimai ID for this slot yet.</p>
+                    {/if}
+                  </div>
+                </details>
+              {/each}
+            </div>
+          </details>
         </section>
       {:else if entityTab === 'narrative'}
         <section class="entity-tab-panel entity-narrative-panel" id="panel-narrative">
@@ -2670,19 +3028,30 @@
       {:else if entityTab === 'schedule'}
         <section class="entity-tab-panel entity-stack-card" id="panel-schedule">
           <h2 class="stack-card-title">Schedule</h2>
-          <p class="stack-card-sub">Cron and timed runs for this entity. Uses 6- or 7-field cron (sec min hour dom mon dow [year]).</p>
+          <p class="stack-card-sub">
+            Have Consistent CEO do something on a timer, for example “every Monday at 9, write a weekly summary”.
+            Pick when, say what to do, and it runs by itself. Most people can skip this: missions and reminders
+            cover one-off work.
+          </p>
+          <div class="sched-presets" aria-label="Quick times">
+            <span class="sched-presets-label">When (your time):</span>
+            <button type="button" class="entity-btn entity-btn-secondary" onclick={() => (scheduleForm.cronExpression = cronAtLocal(9, 0))}>Every day, 9:00</button>
+            <button type="button" class="entity-btn entity-btn-secondary" onclick={() => (scheduleForm.cronExpression = cronAtLocal(9, 0, [1, 2, 3, 4, 5]))}>Weekdays, 9:00</button>
+            <button type="button" class="entity-btn entity-btn-secondary" onclick={() => (scheduleForm.cronExpression = cronAtLocal(9, 0, [1]))}>Mondays, 9:00</button>
+            <button type="button" class="entity-btn entity-btn-secondary" onclick={() => (scheduleForm.cronExpression = '0 0 * * * *')}>Every hour</button>
+          </div>
 
           <form class="ecc-schedule-form" onsubmit={submitScheduledTask}>
             <label class="ecc-field">
-              <span class="ecc-field-label">Cron expression</span>
+              <span class="ecc-field-label">Schedule (cron, in UTC)</span>
               <input
                 class="entity-input"
                 type="text"
-                placeholder="0 9 * * * *"
+                placeholder="0 0 9 * * *"
                 bind:value={scheduleForm.cronExpression}
                 required
               />
-              <small class="ecc-field-hint">Example: <code>0 9 * * * *</code> = every day at 09:00:00</small>
+              <small class="ecc-field-hint">Six fields: second minute hour day month weekday, in UTC. <code>0 0 9 * * *</code> = every day at 09:00 UTC. The buttons above convert your local time for you.</small>
             </label>
 
             <label class="ecc-field">
@@ -4148,6 +4517,51 @@
     font-weight: 700;
   }
 
+  .site-chips { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .site-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-card); font-size: 0.8125rem; color: var(--text-primary); }
+  .site-x { width: 20px; height: 20px; border: 0; border-radius: 50%; background: none; color: var(--text-muted); cursor: pointer; line-height: 1; }
+  .site-x:hover:not(:disabled) { background: rgba(201, 106, 75, 0.2); color: #c96a4b; }
+  .site-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .site-form input { flex: 1 1 220px; min-width: 0; }
+  .iv { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; }
+  .iv-progress { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; color: var(--text-muted); }
+  .iv-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .iv-bar span { display: block; height: 100%; background: #c98a4b; transition: width 0.3s ease; }
+  .iv-card { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid rgba(201, 138, 75, 0.45); border-radius: 12px; background: rgba(201, 138, 75, 0.07); }
+  .iv-ask { margin: 0; font-size: 1rem; color: var(--text-primary); }
+  .iv-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .iv-done { margin: 0; font-size: 0.875rem; color: var(--text-secondary); }
+  .iv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .iv-list li { display: flex; gap: 10px; align-items: baseline; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); }
+  .iv-label { flex: 0 0 96px; font-size: 0.75rem; font-weight: 700; color: var(--text-secondary); }
+  .iv-value { flex: 1; min-width: 0; font-size: 0.8125rem; color: var(--text-primary); overflow-wrap: anywhere; }
+  .sched-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 12px; }
+  .sched-presets-label { font-size: 0.75rem; font-weight: 700; color: var(--text-secondary); }
+  .github-card { margin-bottom: 4px; }
+  .gh-ok {
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: rgba(122, 129, 99, 0.2);
+    color: #7a8163;
+    font-size: 0.6875rem;
+    font-weight: 700;
+  }
+  .gh-hint { margin: 2px 0 10px; }
+  .link-btn {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text-secondary);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .gh-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .gh-token-form input { flex: 1 1 280px; min-width: 0; }
+  .gh-token-form button { flex: 0 0 auto; width: auto; }
+  .other-conn { margin: 12px 0; }
+  .other-conn > summary { cursor: pointer; font-weight: 700; font-size: 0.8125rem; color: var(--text-secondary); }
   .connection-auth-link {
     color: var(--accent-blue, #c98a4b);
     font-weight: 700;

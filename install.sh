@@ -191,6 +191,10 @@ install_systemd_service
 echo
 echo "Open http://127.0.0.1:18800 to set up your account and pick a brain."
 echo
+echo "Try it from the terminal —"
+echo "  consistent-world chat           # talk to it (or: consistent-world chat \"what is overdue?\")"
+echo "  consistent-world status         # tasks and approvals at a glance"
+echo
 echo "Next: reach it from your phone —"
 echo "  consistent-world remote setup   # make it reachable from anywhere (Tailscale)"
 echo "  consistent-world pair           # show the QR to scan in the mobile app"

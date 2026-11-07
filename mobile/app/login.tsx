@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { APIError, getGatewayUrl, isDemoGateway } from '@/api/client';
 import { auth } from '@/api/auth';
 import { NativeButton, Txt } from '@/components';
-import { plainHttpNote } from '@/lib/links';
+import { isLocalNetworkUrl, plainHttpNote } from '@/lib/links';
 import { useTheme } from '@/theme/ThemeProvider';
 import { radius, spacing } from '@/theme/tokens';
 
@@ -29,7 +29,9 @@ function describeAuthError(e: unknown, mode: Mode): string {
     return 'Your computer is offline right now — open Consistent CEO on it, then try again.';
   }
   if (e.status === 401 || e.status === 403) {
-    return mode === 'register' ? 'Could not create that account.' : 'Wrong username or password.';
+    return mode === 'register'
+      ? 'Could not create that account here. To use this phone with your computer, pair it instead: on your computer open Settings → Your phone → Pair a phone.'
+      : 'Wrong username or password.';
   }
   if (mode === 'register' && (e.status === 400 || e.status === 409)) {
     return 'Could not create that account — that username may already be taken.';
@@ -52,14 +54,15 @@ export default function LoginScreen() {
   // Null until we know; true means the app is still on its built-in default URL
   // (the phone's own loopback), so there is no computer to sign in to yet.
   const [needsPairing, setNeedsPairing] = useState<boolean | null>(null);
-  // Signing in over plain http beyond the home Wi-Fi deserves a heads-up.
+  // Signing in over plain http beyond the home Wi-Fi deserves a heads-up;
+  // the home Wi-Fi itself needs no comment here.
   const [httpNote, setHttpNote] = useState<string | null>(null);
 
   const deviceLabel = `${Platform.OS === 'ios' ? 'iPhone' : 'Android'} · Consistent CEO`;
 
   useEffect(() => {
     void isDemoGateway().then(setNeedsPairing);
-    void getGatewayUrl().then((url) => setHttpNote(plainHttpNote(url)));
+    void getGatewayUrl().then((url) => setHttpNote(isLocalNetworkUrl(url) ? null : plainHttpNote(url)));
   }, []);
 
   const done = async () => {

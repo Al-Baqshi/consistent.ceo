@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 import { api } from '@/api';
 import { auth, type AuthUser } from '@/api/auth';
+import { createEntityLocal, deleteEntityLocal, entitiesState, hydrateEntities, syncEntities, updateEntityLocal } from '@/lib/entities';
 import { notify } from '@/lib/notifications';
 import type {
   Approval,
@@ -45,6 +46,9 @@ interface AppState {
   // Entities
   entities: Entity[];
   entitiesLoading: boolean;
+  entitiesLive: boolean;
+  entitiesPending: number;
+  entitiesOffline: boolean;
 
   // Missions / workers
   missions: Mission[];
@@ -70,6 +74,8 @@ interface AppState {
   replaceMessage: (id: string, msg: FeedMessage) => void;
   setChatSessionId: (id: string | undefined) => void;
   loadEntities: () => Promise<void>;
+  saveEntity: (input: { name: string; type: Entity['type']; summary?: string; stage?: string; weight?: number; colour?: string; relatedIds?: string[]; pinned?: boolean; clientId?: string }) => Promise<Entity>;
+  deleteEntity: (id: string) => Promise<void>;
   loadMissions: () => Promise<void>;
   loadWorkers: () => Promise<void>;
   loadControl: () => Promise<void>;
@@ -120,6 +126,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   entities: [],
   entitiesLoading: false,
+  entitiesLive: false,
+  entitiesPending: 0,
+  entitiesOffline: false,
 
   missions: [],
   workers: [],
@@ -188,8 +197,51 @@ export const useAppStore = create<AppState>((set, get) => ({
   async loadEntities() {
     set({ entitiesLoading: true });
     try {
-      const entities = await api.listEntities();
-      set({ entities, entitiesLoading: false });
+      await hydrateEntities();
+      const items = await api.listEntities();
+      set({
+        entities: items,
+        entitiesLoading: false,
+        entitiesLive: entitiesState.live,
+        entitiesPending: entitiesState.pending,
+        entitiesOffline: entitiesState.offline,
+      });
+    } catch {
+      set({ entitiesLoading: false });
+    }
+  },
+
+  async saveEntity(input) {
+    set({ entitiesLoading: true });
+    try {
+      const entity = await api.saveEntity(input);
+      await syncEntities();
+      set((s) => ({
+        entities: s.entities.map((e) => (e.id === entity.id ? entity : e)),
+        entitiesLoading: false,
+        entitiesLive: entitiesState.live,
+        entitiesPending: entitiesState.pending,
+        entitiesOffline: entitiesState.offline,
+      }));
+      return entity;
+    } catch {
+      set({ entitiesLoading: false });
+      throw new Error("Couldn't reach your computer — the entity is saved locally and will sync when it's back.");
+    }
+  },
+
+  async deleteEntity(id) {
+    set({ entitiesLoading: true });
+    try {
+      await api.deleteEntity(id);
+      await syncEntities();
+      set((s) => ({
+        entities: s.entities.filter((e) => e.id !== id),
+        entitiesLoading: false,
+        entitiesLive: entitiesState.live,
+        entitiesPending: entitiesState.pending,
+        entitiesOffline: entitiesState.offline,
+      }));
     } catch {
       set({ entitiesLoading: false });
     }

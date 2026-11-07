@@ -155,6 +155,73 @@ pub fn find_executable_with(name: &str, extra_dirs: &[PathBuf]) -> Option<PathBu
         .filter(|dir| !dir.as_os_str().is_empty())
         .flat_map(|dir| executable_variants(&dir.join(name)))
         .find(|p| p.is_file())
+        .or_else(|| bundled_agent_cli(name))
+}
+
+/// The `claude` or `codex` binary an editor extension ships, for an owner who
+/// signed in through VS Code or Cursor and never installed the CLI globally.
+/// The Claude Code extension carries a full, signed-in `claude` under
+/// `resources/native-binary/`; without this the subscription lane reads as
+/// "not installed" on exactly the machines that have it. The local
+/// installer's `~/.claude/local/claude` is checked first. Among several
+/// extension versions the most recently modified wins.
+fn bundled_agent_cli(name: &str) -> Option<PathBuf> {
+    let (local, prefixes): (Option<PathBuf>, &[&str]) = match name {
+        "claude" => (
+            home_dir().map(|h| h.join(".claude").join("local").join("claude")),
+            &["anthropic.claude-code-"],
+        ),
+        "codex" => (None, &["openai.chatgpt-"]),
+        _ => return None,
+    };
+    if let Some(found) = local
+        .into_iter()
+        .flat_map(|p| executable_variants(&p))
+        .find(|p| p.is_file())
+    {
+        return Some(found);
+    }
+    let home = home_dir()?;
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for editor in [".vscode", ".vscode-insiders", ".cursor", ".windsurf"] {
+        let Ok(entries) = std::fs::read_dir(home.join(editor).join("extensions")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            if !prefixes.iter().any(|p| dir_name.starts_with(p)) {
+                continue;
+            }
+            if let Some(bin) = find_file_within(&entry.path(), name, 4) {
+                let modified = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                candidates.push((modified, bin));
+            }
+        }
+    }
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
+    candidates.into_iter().map(|(_, p)| p).next()
+}
+
+// A breadth-limited search for an executable called `name` under `root`.
+fn find_file_within(root: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+    if let Some(found) = executable_variants(&root.join(name))
+        .into_iter()
+        .find(|p| p.is_file())
+    {
+        return Some(found);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let entries = std::fs::read_dir(root).ok()?;
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| e.file_name() != "node_modules")
+        .find_map(|e| find_file_within(&e.path(), name, depth - 1))
 }
 
 #[cfg(windows)]
