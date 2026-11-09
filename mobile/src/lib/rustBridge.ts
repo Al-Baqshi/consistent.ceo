@@ -9,6 +9,8 @@
 
 import { requireOptionalNativeModule } from 'expo';
 
+import { log } from '@/lib/logger';
+
 import { parseNote, parseReminder, type ParsedNote, type ParsedReminder } from './localParse';
 
 export type { ParsedNote, ParsedReminder };
@@ -33,12 +35,18 @@ async function callBridge<T>(
   try {
     return await fn(bridge);
   } catch (e) {
-    logRust('warn', `bridge call failed: ${String(e)}`);
+    logRust('warn', `rust bridge call failed — using TS fallback parser: ${String(e)}`);
     return null;
   }
 }
 
+/**
+ * Report to the Logs screen and the JS console. The Logs screen is the only
+ * place a TestFlight or App Store build can show this, and the TS parser gives
+ * the same answers as Rust, so a failure would otherwise go unnoticed.
+ */
 export function logRust(level: 'info' | 'warn', msg: string): void {
+  log(level, 'system', msg);
   // eslint-disable-next-line no-console
   console[level](`[rust-bridge] ${msg}`);
 }
@@ -69,7 +77,7 @@ function isParsedNote(v: unknown): v is ParsedNote {
 function decode<T>(json: string, valid: (v: unknown) => v is T, what: string): T | null {
   const value: unknown = JSON.parse(json);
   if (valid(value)) return value;
-  logRust('warn', `unexpected ${what} shape from Rust: ${json}`);
+  logRust('warn', `unexpected ${what} shape from rust bridge — using TS fallback parser: ${json}`);
   return null;
 }
 

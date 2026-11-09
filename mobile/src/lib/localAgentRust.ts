@@ -1,5 +1,4 @@
 import type { ReminderView } from '@/api/types';
-import { log } from '@/lib/logger';
 
 import { createReminderLocal } from './reminders';
 import {
@@ -81,7 +80,6 @@ export async function checkRustAvailability(): Promise<boolean> {
     : isRustAvailable()
       ? 'rust bridge linked but not answering — using TS fallback parser'
       : 'rust bridge not linked — using TS fallback parser';
-  log(version ? 'info' : 'warn', 'system', line);
   logRust(version ? 'info' : 'warn', line);
   return version !== null;
 }
