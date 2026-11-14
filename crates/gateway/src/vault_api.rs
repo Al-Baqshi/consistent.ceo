@@ -62,7 +62,7 @@ use consistent_world_credentials::generator::{
     PasswordSpec, generate_passphrase, generate_password,
 };
 use consistent_world_credentials::model::{
-    AuditEntry, ItemKind, ItemSecret, NewItem, ShareEnvelope, VaultExport,
+    AuditEntry, CustomField, ItemKind, ItemSecret, NewItem, ShareEnvelope, VaultExport,
 };
 use consistent_world_credentials::recovery::random_key;
 use consistent_world_credentials::scope::Scope;
@@ -97,6 +97,7 @@ pub fn vault_routes(state: ServerState) -> Router {
         .route("/api/vault/recovery-code", post(new_recovery_code))
         // items
         .route("/api/vault/items", get(list_items).post(create_item))
+        .route("/api/vault/items/match", get(match_items))
         .route(
             "/api/vault/items/{id}",
             get(get_item_secret).put(update_item).delete(delete_item),
@@ -198,6 +199,62 @@ fn vault_err(e: anyhow::Error) -> ApiErr {
         StatusCode::BAD_REQUEST
     };
     err(code, msg)
+}
+
+/// The names of the entities the caller can see, by id. `None` on a gateway
+/// with no entities at all (the vault on its own, as in the vault's own tests).
+async fn visible_entity_names(
+    state: &ServerState,
+    ctx: &AuthContext,
+) -> Option<std::collections::HashMap<String, String>> {
+    let control = state.control_state.as_ref()?;
+    let entities = control.entities.read().await;
+    Some(
+        entities
+            .iter()
+            .filter(|e| {
+                crate::control_api::is_entity_visible(e, &ctx.workspace_id, Some(&ctx.principal_id))
+            })
+            .map(|e| (e.id.clone(), e.name.clone()))
+            .collect(),
+    )
+}
+
+/// Something may only be filed under an entity the caller can see. Before, any
+/// well-formed id was accepted: a typo, a different letter case or a deleted
+/// entity's id filed a password under an "entity" nothing would ever look in,
+/// and the request still answered 201.
+async fn require_known_scope(
+    state: &ServerState,
+    ctx: &AuthContext,
+    scope: &Scope,
+) -> Result<(), ApiErr> {
+    let Scope::Entity(entity_id) = scope else {
+        return Ok(());
+    };
+    match visible_entity_names(state, ctx).await {
+        Some(names) if !names.contains_key(entity_id) => Err(err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "There is no entity {entity_id} to file this under. Pick one of your entities."
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A scope as people read it: the entity's name when there is one.
+fn scope_label(
+    scope: &Scope,
+    names: Option<&std::collections::HashMap<String, String>>,
+) -> String {
+    match scope {
+        Scope::Entity(id) => names
+            .and_then(|n| n.get(id))
+            .cloned()
+            .unwrap_or_else(|| scope.label()),
+        _ => scope.label(),
+    }
 }
 
 /// `?scope=entity:acme`, defaulting to global.
@@ -649,6 +706,7 @@ async fn create_item(
         return Err(err(StatusCode::BAD_REQUEST, "name is required"));
     }
     let scope = ScopeQuery { scope: body.scope }.parse()?;
+    require_known_scope(&state, &ctx, &scope).await?;
     let id = unlocked(&state, &ctx)?
         .add_item(NewItem {
             kind: body.kind,
@@ -671,17 +729,44 @@ async fn item_scopes(
     let scopes = unlocked(&state, &ctx)?
         .list_item_scopes()
         .map_err(vault_err)?;
+    let names = visible_entity_names(&state, &ctx).await;
     let out: Vec<serde_json::Value> = scopes
         .into_iter()
         .map(|(scope, count)| {
             serde_json::json!({
                 "scope": scope.to_string(),
-                "label": scope.label(),
+                "label": scope_label(&scope, names.as_ref()),
                 "itemCount": count,
             })
         })
         .collect();
     Ok(Json(serde_json::json!({ "scopes": out })))
+}
+
+#[derive(Deserialize)]
+struct MatchQuery {
+    /// Whose logins: `entity:{id}`, or `global` (the CEO's own). Defaults to global.
+    #[serde(default)]
+    scope: Option<String>,
+    /// The page, as a full address or a bare domain.
+    url: String,
+}
+
+/// `GET /items/match?scope=entity:{id}&url=…`: the logins in one set that
+/// belong on a web address, best fit first, so "which account does this entity
+/// use here" has an answer. Metadata only; nothing is decrypted. A login saved
+/// for a site is found on the site and its subdomains, the same rule an
+/// entity's browser uses for the sites it may visit.
+async fn match_items(
+    State(state): State<ServerState>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(q): Query<MatchQuery>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    let scope = ScopeQuery { scope: q.scope }.parse()?;
+    let found = unlocked(&state, &ctx)?
+        .find_logins(&scope, &q.url)
+        .map_err(vault_err)?;
+    Ok(Json(serde_json::json!({ "items": found })))
 }
 
 #[derive(Deserialize)]
@@ -702,6 +787,7 @@ async fn move_item(
         .scope
         .parse()
         .map_err(|e: anyhow::Error| err(StatusCode::BAD_REQUEST, e.to_string()))?;
+    require_known_scope(&state, &ctx, &scope).await?;
     unlocked(&state, &ctx)?
         .set_item_scope(&id, scope)
         .map_err(vault_err)?;
@@ -719,12 +805,45 @@ async fn get_item_secret(
     Ok(Json(secret))
 }
 
+/// The body of `PUT /items/{id}`: the item's whole secret, in the shape
+/// `GET /items/{id}` returns it.
+///
+/// The secret is replaced, not merged, so the body is strict: a body of
+/// another shape (a create request, a misspelled `totp`) used to parse as an
+/// empty secret and wipe the item while answering 204. `passwordHistory` is
+/// accepted so a client can send back exactly what it fetched; the vault keeps
+/// the history itself and ignores the copy.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpdateSecretRequest {
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    totp_secret: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    custom_fields: Vec<CustomField>,
+    #[serde(default, rename = "passwordHistory")]
+    _password_history: Option<serde_json::Value>,
+}
+
 async fn update_item(
     State(state): State<ServerState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(secret): Json<ItemSecret>,
+    Json(body): Json<UpdateSecretRequest>,
 ) -> Result<StatusCode, ApiErr> {
+    let secret = ItemSecret {
+        username: body.username,
+        password: body.password,
+        totp_secret: body.totp_secret,
+        notes: body.notes,
+        custom_fields: body.custom_fields,
+        password_history: Vec::new(),
+    };
     unlocked(&state, &ctx)?
         .update_item_secret(&id, &secret)
         .map_err(vault_err)?;
@@ -854,6 +973,7 @@ async fn set_secret(
     Json(body): Json<SetSecretRequest>,
 ) -> Result<StatusCode, ApiErr> {
     let scope = ScopeQuery { scope: body.scope }.parse()?;
+    require_known_scope(&state, &ctx, &scope).await?;
     unlocked(&state, &ctx)?
         .set_scoped(&scope, &body.key, &body.value)
         .map_err(vault_err)?;
@@ -923,12 +1043,13 @@ async fn list_scopes(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let vault = unlocked(&state, &ctx)?;
+    let names = visible_entity_names(&state, &ctx).await;
     let mut out = Vec::new();
     for scope in vault.list_scopes().map_err(vault_err)? {
         let keys = vault.list_scoped_keys(&scope).map_err(vault_err)?;
         out.push(ScopeSummary {
             scope: scope.to_string(),
-            label: scope.label(),
+            label: scope_label(&scope, names.as_ref()),
             key_count: keys.len(),
         });
     }
@@ -1128,6 +1249,7 @@ async fn import_csv(
     Json(body): Json<ImportCsvRequest>,
 ) -> Result<Json<serde_json::Value>, ApiErr> {
     let scope = ScopeQuery { scope: body.scope }.parse()?;
+    require_known_scope(&state, &ctx, &scope).await?;
     let parsed = consistent_world_credentials::import::parse_csv(&body.csv)
         .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?
         .into_scope(scope);

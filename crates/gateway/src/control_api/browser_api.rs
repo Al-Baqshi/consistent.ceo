@@ -1,10 +1,12 @@
-//! The Consistent browser: open it, close it, see what is open, and say which
-//! sites the agent may use in it for an entity.
+//! Each entity's own browser: open it, close it, see what is open in it, and
+//! say which sites the agent may use in it.
 //!
-//! `GET /api/browser`, `POST /api/browser/open`, `POST /api/browser/close`,
-//! `PUT /api/entities/{id}/browser-sites`. The window itself is
-//! [`crate::browser_manager`]; the rules for what the agent may do in it are in
-//! [`crate::mcp_browser`]. A child module of `control_api` (`use super::*`).
+//! `GET /api/browser` (every entity's browser at a glance),
+//! `GET /api/entities/{id}/browser`, `POST /api/entities/{id}/browser/open`,
+//! `POST /api/entities/{id}/browser/close`, `PUT /api/entities/{id}/browser-sites`.
+//! The windows themselves are [`crate::browser_manager`]; the rules for what the
+//! agent may do in them are in [`crate::mcp_browser`]. A child module of
+//! `control_api` (`use super::*`).
 //!
 //! Opening a browser window only makes sense on the person's own computer, so
 //! open and close answer 409 on a gateway that is not one. Everything here is
@@ -12,6 +14,7 @@
 //! what an unattended run can reach.
 
 use super::*;
+use crate::browser_manager::BrowserStatus;
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
@@ -23,42 +26,137 @@ fn require_local(state: &ServerState) -> Result<(), ApiError> {
     if state.local_files.is_none() {
         return Err(api_error(
             StatusCode::CONFLICT,
-            "The Consistent browser opens on your own computer, and this gateway is not running on one.",
+            "An entity's browser opens on your own computer, and this gateway is not running on one.",
         ));
     }
     Ok(())
 }
 
-pub(super) async fn get_browser(
-    State(state): State<ServerState>,
-    Extension(auth): Extension<AuthContext>,
-) -> Result<Json<crate::browser_manager::BrowserStatus>, ApiError> {
-    require_admin_json(&auth, &state)?;
-    Ok(Json(crate::browser_manager::status().await))
+/// One entity's browser, as the dashboard shows it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EntityBrowser {
+    entity_id: String,
+    entity_name: String,
+    /// The sites the agent may use in it.
+    sites: Vec<String>,
+    #[serde(flatten)]
+    status: BrowserStatus,
 }
 
-pub(super) async fn open_browser(
-    State(state): State<ServerState>,
-    Extension(auth): Extension<AuthContext>,
-) -> Result<Json<crate::browser_manager::BrowserStatus>, ApiError> {
-    require_admin_json(&auth, &state)?;
-    require_local(&state)?;
-    crate::browser_manager::open()
-        .await
-        .map(Json)
-        .map_err(|m| api_error(StatusCode::BAD_GATEWAY, m))
+impl EntityBrowser {
+    fn new(entity: &Entity, status: BrowserStatus) -> Self {
+        Self {
+            entity_id: entity.id.clone(),
+            entity_name: entity.name.clone(),
+            sites: entity.browser_sites.clone(),
+            status,
+        }
+    }
 }
 
-pub(super) async fn close_browser(
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BrowsersOverview {
+    chrome_found: bool,
+    chrome_name: Option<String>,
+    browsers: Vec<EntityBrowser>,
+}
+
+async fn visible_entities(s: &ControlState, workspace: &WorkspaceCtx) -> Vec<Entity> {
+    s.entities
+        .read()
+        .await
+        .iter()
+        .filter(|e| is_entity_visible(e, &workspace.id, Some(workspace.principal_id.as_str())))
+        .cloned()
+        .collect()
+}
+
+async fn visible_entity(
+    state: &ServerState,
+    workspace: &WorkspaceCtx,
+    entity_id: &str,
+) -> Result<Entity, ApiError> {
+    let s = control(state).map_err(|c| api_error(c, "The app isn't ready yet."))?;
+    visible_entities(s, workspace)
+        .await
+        .into_iter()
+        .find(|e| e.id == entity_id)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "No such entity."))
+}
+
+/// `GET /api/browser`: every entity's browser at a glance.
+pub(super) async fn get_browsers(
     State(state): State<ServerState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<crate::browser_manager::BrowserStatus>, ApiError> {
+    Extension(workspace): Extension<WorkspaceCtx>,
+) -> Result<Json<BrowsersOverview>, ApiError> {
+    require_admin_json(&auth, &state)?;
+    let s = control(&state).map_err(|c| api_error(c, "The app isn't ready yet."))?;
+    let entities = visible_entities(s, &workspace).await;
+    let statuses = futures::future::join_all(
+        entities
+            .iter()
+            .map(|e| crate::browser_manager::status(&e.id)),
+    )
+    .await;
+    let browsers = entities
+        .iter()
+        .zip(statuses)
+        .map(|(e, status)| EntityBrowser::new(e, status))
+        .collect();
+    let (chrome_found, chrome_name) = crate::browser_manager::chrome_available();
+    Ok(Json(BrowsersOverview {
+        chrome_found,
+        chrome_name,
+        browsers,
+    }))
+}
+
+/// `GET /api/entities/{id}/browser`.
+pub(super) async fn get_entity_browser(
+    State(state): State<ServerState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(workspace): Extension<WorkspaceCtx>,
+    Path(entity_id): Path<String>,
+) -> Result<Json<EntityBrowser>, ApiError> {
+    require_admin_json(&auth, &state)?;
+    let entity = visible_entity(&state, &workspace, &entity_id).await?;
+    let status = crate::browser_manager::status(&entity.id).await;
+    Ok(Json(EntityBrowser::new(&entity, status)))
+}
+
+/// `POST /api/entities/{id}/browser/open`: open the entity's window, or bring it forward.
+pub(super) async fn open_entity_browser(
+    State(state): State<ServerState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(workspace): Extension<WorkspaceCtx>,
+    Path(entity_id): Path<String>,
+) -> Result<Json<EntityBrowser>, ApiError> {
     require_admin_json(&auth, &state)?;
     require_local(&state)?;
-    crate::browser_manager::close()
+    let entity = visible_entity(&state, &workspace, &entity_id).await?;
+    let status = crate::browser_manager::open(&entity.id, &entity.name)
         .await
-        .map(Json)
-        .map_err(|m| api_error(StatusCode::BAD_GATEWAY, m))
+        .map_err(|m| api_error(StatusCode::BAD_GATEWAY, m))?;
+    Ok(Json(EntityBrowser::new(&entity, status)))
+}
+
+/// `POST /api/entities/{id}/browser/close`: close the entity's window politely.
+pub(super) async fn close_entity_browser(
+    State(state): State<ServerState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(workspace): Extension<WorkspaceCtx>,
+    Path(entity_id): Path<String>,
+) -> Result<Json<EntityBrowser>, ApiError> {
+    require_admin_json(&auth, &state)?;
+    require_local(&state)?;
+    let entity = visible_entity(&state, &workspace, &entity_id).await?;
+    let status = crate::browser_manager::close(&entity.id)
+        .await
+        .map_err(|m| api_error(StatusCode::BAD_GATEWAY, m))?;
+    Ok(Json(EntityBrowser::new(&entity, status)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,15 +251,23 @@ pub(super) async fn set_entity_browser_sites(
             sites.push(site);
         }
     }
-    let mut entities = s.entities.write().await;
-    let entity = entities
-        .iter_mut()
-        .find(|e| {
-            e.id == entity_id
-                && is_entity_visible(e, &workspace.id, Some(workspace.principal_id.as_str()))
-        })
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "No such entity."))?;
-    entity.browser_sites = sites.clone();
+    {
+        let mut entities = s.entities.write().await;
+        let entity = entities
+            .iter_mut()
+            .find(|e| {
+                e.id == entity_id
+                    && is_entity_visible(e, &workspace.id, Some(workspace.principal_id.as_str()))
+            })
+            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "No such entity."))?;
+        entity.browser_sites = sites.clone();
+    }
+    // Written through now rather than on the next minute's sync: the desktop
+    // app ends the gateway without a shutdown save, and a site list that
+    // quietly reverts is a permission that changed without anyone deciding.
+    if let Err(e) = s.sync_entities_to_store().await {
+        warn!(error = %e, "could not save the entity's browser sites");
+    }
     Ok(Json(BrowserSitesResponse { sites }))
 }
 

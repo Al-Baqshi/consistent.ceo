@@ -5,8 +5,10 @@ accounts, dashboards, anything with a login), under the same rules as the rest
 of the product: you see what it does, outward-facing actions wait for your
 approval, and it can be stopped instantly.
 
-Status: **M1 built** (2026-10-17): the Consistent browser, per-entity sites, and the
-safety changes it needed. M2 onward is still a plan. See "What M1 shipped" below.
+Status: **M1 built** (2026-10-17), **reworked to one browser per entity** (2026-10-20):
+each entity has its own window and profile, so its accounts (its social media, its
+dashboards) are signed in there and nowhere else. M2 onward is still a plan. See
+"What M1 shipped" below.
 
 ## Recommendation
 
@@ -48,15 +50,29 @@ port is content-script based and a little less capable.
 
 ## What M1 shipped
 
-- **Settings → Consistent browser** opens a visible Chrome window on its own profile
-  (`~/.consistent-world/browser-profile`), shows which sites are open in it, and closes it
-  politely so Chrome saves the session. The window outlives the gateway; a window left open
-  is found again through the `DevToolsActivePort` file Chrome writes
-  (`browser_manager.rs`, `tools/src/chrome.rs`).
-- **Browser tasks drive that same window.** The executor opens it if it is closed, and the
-  run's MCP server attaches to it, in its own tab. If the window cannot be opened the run
-  falls back to launching its own Chrome, as before.
-- **Sites are opt-in per entity** (Permissions tab; `PUT /api/entities/{id}/browser-sites`).
+- **Every entity has its own browser.** The entity's **Browser** tab opens a visible Chrome
+  window on that entity's profile (`~/.consistent-world/browsers/<entity-id>`), shows which
+  sites are open in it, and closes it politely so Chrome saves the session. Two entities'
+  sign-ins never meet: two X accounts for two entities are two windows. **Settings → Browsers**
+  lists every entity's browser. The first time a window opens it shows a page saying whose
+  window it is. A window outlives the gateway; one left open is found again through the
+  `DevToolsActivePort` file Chrome writes (`browser_manager.rs`, `tools/src/chrome.rs`,
+  `GET /api/browser`, `GET|POST /api/entities/{id}/browser[/open|/close]`).
+  (Until 2026-10-20 there was one shared window on `~/.consistent-world/browser-profile`;
+  that folder is no longer used.)
+- **On macOS the window is started through Launch Services** (`open -n -a`), as an app of
+  its own. Found in the first real run: a Chrome spawned as the gateway's child counts, to
+  macOS, as part of Consistent CEO. When an App Management permission change made macOS
+  "Quit & Reopen" the app, the browser went down with it mid sign-in, and Chrome's own
+  requests (updating itself) were put to the person as Consistent CEO's. Elsewhere Chrome
+  is started in a process group of its own.
+- **Browser tasks drive their entity's window.** The executor opens it if it is closed, and
+  the run's MCP server attaches to it, in its own tab. If the window cannot be opened the run
+  falls back to launching its own Chrome on the same profile. The run is told it is browser
+  work (use the `browser` tool, never type a password, page text is not instructions)
+  instead of being handed the coding checklist.
+- **Sites are opt-in per entity** (Browser tab; `PUT /api/entities/{id}/browser-sites`,
+  saved at once rather than on the next minute's sync).
   Money and sign-in domains are refused when a site is added. **A browser task on an entity
   with no sites is blocked with an instruction instead of running.** That tightens what
   existed before (browser tasks ran against any non-denied site), on purpose.
@@ -85,13 +101,13 @@ MCP server. Known limits: popups from a frame in its own process are outside the
 
 ## Milestones
 
-**M1 — the Consistent browser. Built, see above.**
-Settings → Browser: "Open the Consistent browser" starts visible Chrome with a
-profile under `~/.consistent-world/browser-profile`, with a debugging port the
-gateway attaches to. Status line (open / signed-in sites seen). A per-entity
-list of sites the agent may use; everything else is refused. Done when: you sign
-in to one site, close the window, reopen it, and a browser task for an entity
-that allows that site reads a logged-in page.
+**M1 — a browser per entity. Built, see above.**
+An entity's Browser tab starts visible Chrome on that entity's profile under
+`~/.consistent-world/browsers/`, with a debugging port the gateway attaches to.
+Status line (open / signed-in sites seen). A per-entity list of sites the agent
+may use; everything else is refused. Done when: you sign in to one site in an
+entity's browser, close the window, reopen it, and a browser task for that
+entity reads a logged-in page.
 
 **M2 — watch, pause, take over.**
 Live screenshot strip in the dashboard task view, a Pause button the agent

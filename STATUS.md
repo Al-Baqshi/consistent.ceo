@@ -246,6 +246,31 @@ See P0.5 in the roadmap.
   Not exercised: a real GitHub connect (would store a token), the Tailscale
   setup call (would change your Tailscale), the Terminal fix and the Dock icon
   on screen.
+- **A browser per entity, and a wallet that keeps what it saves** (2026-10-20) — each
+  entity has its own Chrome window and profile (`~/.consistent-world/browsers/<entity-id>`,
+  the entity's new **Browser** tab, Settings → Browsers), so its accounts are signed in
+  there and nowhere else; browser tasks drive their entity's window and are told it is
+  browser work. On macOS the window is now started through Launch Services: the first
+  real run showed a Chrome spawned as the gateway's child is, to macOS, part of
+  Consistent CEO, so an App Management "Quit & Reopen" of the app killed it mid sign-in.
+  Throwaway browsers get a profile folder each (two at once used to collide). Wallet,
+  after a two-agent audit: an unlock or password change overlapping a save no longer
+  undoes the save (probe: 60/60 lost before, 0 after), enrolling a device can no longer
+  drop or be dropped by a save, a double "create" can no longer hand out a recovery
+  code that opens nothing, a wrongly shaped `PUT /items/{id}` is refused instead of
+  wiping the item, items can only be filed under entities the caller can see, scope
+  lists carry entity names (the phone showed UUIDs), `GET /api/vault/items/match` finds
+  an entity's login for a site, the web vault edits name/category/websites, opens on an
+  entity from a link, and keeps unsaved edits through an auto-lock (30 min, page memory
+  only). Verified: credentials 161 tests, vault HTTP tests, browser 29 real-Chrome tests
+  in parallel, a real window opened through Launch Services and checked to be launchd's
+  child. Not exercised: the shipped app (needs a rebuild), a real sign-in into an entity
+  window followed by a `claude` run. Still open from the audit: shell-capable agents can
+  read the vault over the local API with the machine token; an entity's own API key
+  silently falls back to the global one when the vault is locked; deleting an entity
+  orphans its vault items; imports duplicate and drop Bitwarden custom fields; two
+  gateway processes on one vault file; secrets added on the Connections tab live in the
+  keychain, outside the wallet.
 - **The Consistent browser** (2026-10-17, `browser_manager.rs`, `tools/src/chrome.rs`,
   `docs/plans/browser-control.md` M1) — a visible Chrome window on a profile of its own that a
   person signs in to and browser tasks then drive, per-entity site lists, and the safety work

@@ -1,8 +1,8 @@
-//! Finding, launching and re-adopting the Consistent browser's Chrome.
+//! Finding, launching and re-adopting an entity's browser.
 //!
-//! The Consistent browser is an ordinary, visible Chrome window with a profile
-//! of its own. A person signs in to whatever they like in it; the agent drives
-//! the same window afterwards over the Chrome DevTools Protocol
+//! Each entity's browser is an ordinary, visible Chrome window with a profile
+//! of its own. A person signs in to that entity's accounts in it; the agent
+//! drives the same window afterwards over the Chrome DevTools Protocol
 //! (`BrowserTool` with `cdp_url`). This module is the plumbing for that and
 //! nothing else: where Chrome is, which flags the window starts with, and how to
 //! find a window that is already running.
@@ -86,6 +86,30 @@ pub fn find_chrome() -> Option<PathBuf> {
     candidate_paths().into_iter().find(|p| p.is_file())
 }
 
+/// The `.app` bundle an executable sits in (`/Applications/Google Chrome.app` for
+/// `.../Google Chrome.app/Contents/MacOS/Google Chrome`), or `None` for a bare
+/// binary. On macOS a window is started through the bundle with Launch Services,
+/// so it is an app in its own right rather than the gateway's child.
+pub fn app_bundle(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .find(|p| {
+            p.extension().is_some_and(|ext| ext == "app")
+                && p.join("Contents").join("MacOS").is_dir()
+        })
+        .map(Path::to_path_buf)
+}
+
+/// Who holds the profile right now, as Chrome records it: the `SingletonLock`
+/// link's target (`<host>-<pid>`). A launch that finds the profile already open
+/// hands itself to that window and exits, so the owner does not change; a launch
+/// that starts a new window takes the lock. `None` when nobody has held it.
+pub fn profile_lock_owner(profile_dir: &Path) -> Option<String> {
+    std::fs::read_link(profile_dir.join("SingletonLock"))
+        .ok()
+        .map(|target| target.to_string_lossy().to_string())
+        .filter(|owner| !owner.is_empty())
+}
+
 /// The command-line a Consistent browser window starts with. Pure, so the flags
 /// are checked by a test rather than by remembering them.
 pub fn launch_args(profile_dir: &Path, headless: bool) -> Vec<OsString> {
@@ -103,19 +127,19 @@ pub fn launch_args(profile_dir: &Path, headless: bool) -> Vec<OsString> {
     args
 }
 
-/// Name the profile so the window is recognisable ("Consistent browser" in the
+/// Name the profile so the window is recognisable (the entity's name in the
 /// profile menu). Written only when the profile has no preferences yet; once
 /// Chrome owns the file, it is Chrome's.
-pub fn brand_new_profile(profile_dir: &Path) {
+pub fn brand_new_profile(profile_dir: &Path, name: &str) {
     let default_dir = profile_dir.join("Default");
     let prefs = default_dir.join("Preferences");
     if prefs.exists() || std::fs::create_dir_all(&default_dir).is_err() {
         return;
     }
-    let _ = std::fs::write(
-        prefs,
-        br#"{"profile":{"name":"Consistent browser","using_default_name":false}}"#,
-    );
+    let name = name.trim();
+    let name = if name.is_empty() { "Consistent browser" } else { name };
+    let body = serde_json::json!({ "profile": { "name": name, "using_default_name": false } });
+    let _ = std::fs::write(prefs, body.to_string());
 }
 
 /// `http://127.0.0.1:<port>` of a window launched with [`launch_args`], read
@@ -258,14 +282,51 @@ mod tests {
     #[test]
     fn a_new_profile_is_named_and_an_existing_one_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
-        brand_new_profile(dir.path());
+        // A name with quotes stays valid JSON: the file is Chrome's to parse.
+        brand_new_profile(dir.path(), "Acme \"Shop\"");
         let prefs = dir.path().join("Default/Preferences");
-        assert!(std::fs::read_to_string(&prefs).unwrap().contains("Consistent browser"));
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(written["profile"]["name"], "Acme \"Shop\"");
         std::fs::write(&prefs, "{\"chrome\":\"owns this\"}").unwrap();
-        brand_new_profile(dir.path());
+        brand_new_profile(dir.path(), "Someone else");
         assert_eq!(
             std::fs::read_to_string(&prefs).unwrap(),
             "{\"chrome\":\"owns this\"}"
+        );
+        let unnamed = tempfile::tempdir().unwrap();
+        brand_new_profile(unnamed.path(), "  ");
+        assert!(
+            std::fs::read_to_string(unnamed.path().join("Default/Preferences"))
+                .unwrap()
+                .contains("Consistent browser")
+        );
+    }
+
+    #[test]
+    fn the_app_bundle_is_found_from_the_binary_inside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("Google Chrome.app");
+        let exe = bundle.join("Contents/MacOS/Google Chrome");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        assert_eq!(app_bundle(&exe), Some(bundle));
+        // A bare binary, or a folder that only looks like a bundle, is not one.
+        assert_eq!(app_bundle(Path::new("/usr/bin/chromium")), None);
+        let fake = dir.path().join("fake.app/chrome");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        assert_eq!(app_bundle(&fake), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_profile_owner_is_read_from_chromes_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(profile_lock_owner(dir.path()), None);
+        std::os::unix::fs::symlink("laptop.local-4242", dir.path().join("SingletonLock")).unwrap();
+        assert_eq!(
+            profile_lock_owner(dir.path()).as_deref(),
+            Some("laptop.local-4242")
         );
     }
 
