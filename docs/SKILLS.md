@@ -60,7 +60,7 @@ dashboard shows "Replaced by …" on a shadowed skill.
 
 The built-in playbook: `ceo-daily-brief`, `venture-weekly-review`,
 `decision-memo`, `investor-update`, `mission-planner`, `meeting-to-actions`,
-`delegation-brief`, `customer-signal-synthesis`, `skill-author`. Each is written
+`delegation-brief`, `customer-signal-synthesis`, `skill-author`, `ugc-video`. Each is written
 against the gateway's own chat tools (`review_today`, `recall_recent`,
 `create_task`, `create_mission`, `update_entity`, …), so following one acts
 inside the product rather than only advising.

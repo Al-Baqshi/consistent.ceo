@@ -44,6 +44,7 @@ const DEMO: [string, string, string][] = [
   ['delegation-brief', 'Delegation brief', 'Writes a brief a teammate, contractor or agent can execute without coming back with questions.'],
   ['customer-signal-synthesis', 'Customer signal synthesis', 'Clusters customer feedback into ranked themes with quotes and recommended actions.'],
   ['skill-author', 'Skill author', 'Turns a workflow you just walked through into a reusable skill for one venture or all of them.'],
+  ['ugc-video', 'UGC video', 'Turns an idea into a short UGC-style video for a venture: idea test, five hooks, agreed concept, spoken script, timed voice-over, rendered cuts.'],
 ];
 
 function demoSkills(): SkillsList {

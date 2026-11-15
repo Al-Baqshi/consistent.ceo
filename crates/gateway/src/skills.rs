@@ -116,6 +116,10 @@ const BUILTINS: &[Builtin] = &[
         slug: "skill-author",
         raw: include_str!("../skills/skill-author/SKILL.md"),
     },
+    Builtin {
+        slug: "ugc-video",
+        raw: include_str!("../skills/ugc-video/SKILL.md"),
+    },
 ];
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
