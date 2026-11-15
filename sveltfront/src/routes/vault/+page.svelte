@@ -128,6 +128,36 @@
   let openSecret = $state<ItemSecret | null>(null);
   // The open item's secret as loaded or last saved, to tell unsaved edits apart.
   let openSecretSaved = '';
+  // The open item's name, category and websites, editable beside its secret.
+  // Websites are one per line: they are what finds the login for a site.
+  type OpenMeta = { name: string; folder: string; uris: string };
+  let openMeta = $state<OpenMeta | null>(null);
+  let openMetaSaved = '';
+  const metaFingerprint = (meta: OpenMeta) => JSON.stringify(meta);
+
+  // Unsaved work the auto-lock would otherwise throw away: the open item's edits
+  // and a half-written new item. Before, locking wiped them silently, so a
+  // password changed on a site while the vault idled was lost. They are kept on
+  // this page only (never sent anywhere) for KEEP_DRAFT_MS after the lock, and
+  // handed back after the next unlock, still unsaved.
+  type ComposerDraft = {
+    kind: ItemKind;
+    name: string;
+    username: string;
+    password: string;
+    uri: string;
+    notes: string;
+    folder: string;
+    totp: string;
+  };
+  type KeptDraft = {
+    at: number;
+    scope: string;
+    item: { id: string; name: string; secret: ItemSecret; meta: OpenMeta | null } | null;
+    composer: ComposerDraft | null;
+  };
+  let keptDraft = $state<KeptDraft | null>(null);
+  const KEEP_DRAFT_MS = 30 * 60 * 1000;
   let revealPassword = $state(false);
   let revealTotpSeed = $state(false);
 
@@ -404,6 +434,7 @@
    *  a live way in and exists nowhere else, so wiping it before it is written
    *  down would strand a credential nobody has seen. */
   function wipeUnlockedState() {
+    keepUnsavedWork();
     closeItem();
     items = [];
     itemScopeList = [];
@@ -436,6 +467,84 @@
     backupPassphrase = '';
     restorePassphrase = '';
     restoreJson = '';
+  }
+
+  /** Set aside the open item's unsaved edits and a half-written new item before
+   *  the page is wiped (see `keptDraft`). Nothing is kept when nothing changed. */
+  function keepUnsavedWork() {
+    const itemDirty =
+      openItemId !== null &&
+      openSecret !== null &&
+      (fingerprint(openSecret) !== openSecretSaved ||
+        (openMeta !== null && metaFingerprint(openMeta) !== openMetaSaved));
+    const composer: ComposerDraft = {
+      kind: draftKind,
+      name: draftName,
+      username: draftUsername,
+      password: draftPassword,
+      uri: draftUri,
+      notes: draftNotes,
+      folder: draftFolder,
+      totp: draftTotp
+    };
+    const composerDirty =
+      showComposer && [composer.name, composer.username, composer.password, composer.notes, composer.totp].some((v) => v.trim());
+    if (!itemDirty && !composerDirty) return;
+    keptDraft = {
+      at: Date.now(),
+      scope: itemScope,
+      item:
+        itemDirty && openItemId && openSecret
+          ? {
+              id: openItemId,
+              name: openMeta?.name || items.find((i) => i.id === openItemId)?.name || 'this item',
+              secret: $state.snapshot(openSecret) as ItemSecret,
+              meta: openMeta ? ($state.snapshot(openMeta) as OpenMeta) : null
+            }
+          : null,
+      composer: composerDirty ? composer : null
+    };
+  }
+
+  /** After an unlock, hand back what the lock set aside, still unsaved. */
+  async function restoreUnsavedWork() {
+    const kept = keptDraft;
+    if (!kept || !status?.unlocked) return;
+    keptDraft = null;
+    if (Date.now() - kept.at > KEEP_DRAFT_MS) return;
+    if (kept.scope !== itemScope) {
+      itemScope = kept.scope;
+      const loaded = await guard(() => listItems(kept.scope));
+      if (!status?.unlocked) return;
+      items = loaded ?? [];
+    }
+    if (kept.composer) {
+      showComposer = true;
+      draftKind = kept.composer.kind;
+      draftName = kept.composer.name;
+      draftUsername = kept.composer.username;
+      draftPassword = kept.composer.password;
+      draftUri = kept.composer.uri;
+      draftNotes = kept.composer.notes;
+      draftFolder = kept.composer.folder;
+      draftTotp = kept.composer.totp;
+    }
+    if (kept.item) {
+      const summary = items.find((i) => i.id === kept.item?.id);
+      const stored = summary ? await guard(() => getItemSecret(kept.item!.id)) : null;
+      if (!summary || !stored || !status?.unlocked) {
+        error = `Your unsaved changes to “${kept.item.name}” could not be put back: the item is no longer in this set.`;
+        return;
+      }
+      openItemId = summary.id;
+      openSecret = kept.item.secret;
+      // Compared with what is stored, so the edits still count as unsaved.
+      openSecretSaved = fingerprint(stored);
+      openMeta = kept.item.meta ?? metaOf(summary);
+      openMetaSaved = metaFingerprint(metaOf(summary));
+      startTotp(summary.id, stored);
+    }
+    flash('Your unsaved changes are back. Save to keep them.');
   }
 
   /** The vault is locked — we just locked it, or the gateway answered 423. Wipe
@@ -510,6 +619,7 @@
     if (loadedItemScopes) itemScopeList = loadedItemScopes;
     if (loadedKeys) secretKeys = loadedKeys;
     if (loadedScopes) scopes = loadedScopes;
+    if (keptDraft) await restoreUnsavedWork();
   }
 
   /** Comparable form of an item's secret half. `hidden` is left out: masking a
@@ -517,9 +627,18 @@
   const fingerprint = (secret: ItemSecret) =>
     JSON.stringify(secret, (key, value) => (key === 'hidden' ? undefined : value));
 
+  /** An item's name, category and websites, as the editor holds them. */
+  const metaOf = (item: ItemSummary): OpenMeta => ({
+    name: item.name,
+    folder: item.folder ?? '',
+    uris: item.uris.join('\n')
+  });
+
   /** Ask before something throws away unsaved edits to the open item. */
   function confirmDiscard(): boolean {
-    if (!openSecret || fingerprint(openSecret) === openSecretSaved) return true;
+    const secretDirty = openSecret !== null && fingerprint(openSecret) !== openSecretSaved;
+    const metaDirty = openMeta !== null && metaFingerprint(openMeta) !== openMetaSaved;
+    if (!secretDirty && !metaDirty) return true;
     return confirm('Discard your unsaved changes to this item?');
   }
 
@@ -877,6 +996,9 @@
       openItemId = id;
       openSecret = secret;
       openSecretSaved = fingerprint(secret);
+      const summary = items.find((i) => i.id === id);
+      openMeta = summary ? metaOf(summary) : null;
+      openMetaSaved = openMeta ? metaFingerprint(openMeta) : '';
       revealPassword = false;
       revealTotpSeed = false;
       showHistory = false;
@@ -888,6 +1010,8 @@
     openItemId = null;
     openSecret = null;
     openSecretSaved = '';
+    openMeta = null;
+    openMetaSaved = '';
     revealPassword = false;
     revealTotpSeed = false;
     showHistory = false;
@@ -1036,13 +1160,33 @@
     if (!openItemId || !openSecret) return;
     const id = openItemId;
     const saving = $state.snapshot(openSecret) as ItemSecret;
+    const meta = openMeta ? ($state.snapshot(openMeta) as OpenMeta) : null;
+    if (meta && !meta.name.trim()) {
+      error = 'Give the item a name';
+      return;
+    }
+    const metaChanged = meta !== null && metaFingerprint(meta) !== openMetaSaved;
     busy = true;
     const ok = await guard(() => updateItemSecret(id, saving));
+    const metaOk =
+      ok !== null && meta && metaChanged
+        ? await guard(() =>
+            updateItemMetadata(id, {
+              name: meta.name.trim(),
+              folder: meta.folder.trim() || null,
+              uris: meta.uris
+                .split('\n')
+                .map((u) => u.trim())
+                .filter(Boolean)
+            })
+          )
+        : undefined;
     busy = false;
-    if (ok !== null) {
+    if (ok !== null && metaOk !== null) {
       if (openItemId === id) {
         // Edits typed while the save was in flight still count as unsaved.
         openSecretSaved = fingerprint(saving);
+        if (meta) openMetaSaved = metaFingerprint(meta);
         // The code is read from the stored seed, which may just have changed.
         startTotp(id, saving);
       }
@@ -1213,6 +1357,19 @@
   }
 
   onMount(async () => {
+    // Opened for one entity (its Browser tab links here): show that entity's
+    // set, and the new-item form for a site if asked. Read once, before the first load.
+    const params = new URLSearchParams(window.location.search);
+    const wanted = params.get('scope');
+    if (wanted && (wanted === GLOBAL_SCOPE || /^entity:[A-Za-z0-9._-]+$/.test(wanted))) {
+      itemScope = wanted;
+      tab = 'passwords';
+    }
+    if (params.get('new') === '1') {
+      showComposer = true;
+      draftKind = 'login';
+      draftUri = params.get('site')?.trim() ?? '';
+    }
     await refreshStatus();
     await loadAll();
     loading = false;
@@ -1358,6 +1515,12 @@
   {:else if !status.unlocked}
     <div class="panel gate">
       <h2>Vault locked</h2>
+      {#if keptDraft}
+        <p class="muted small">
+          Your unsaved changes{keptDraft.item ? ` to “${keptDraft.item.name}”` : ''} are kept on this page.
+          Unlock to save them.
+        </p>
+      {/if}
 
       {#if computerReady}
         <button class="btn primary big" onclick={unlockByComputer} disabled={busy}>
@@ -1643,6 +1806,25 @@
 
               {#if openItemId === item.id && openSecret}
                 <div class="detail">
+                  {#if openMeta}
+                    <div class="field">
+                      <span class="label">Name</span>
+                      <input bind:value={openMeta.name} autocomplete="off" />
+                    </div>
+                    <div class="field">
+                      <span class="label">Category</span>
+                      <input placeholder="Social, Banking…" bind:value={openMeta.folder} autocomplete="off" />
+                    </div>
+                    <div class="field">
+                      <span class="label">Websites</span>
+                      <textarea
+                        rows="2"
+                        placeholder="One per line, e.g. instagram.com"
+                        bind:value={openMeta.uris}
+                        autocomplete="off"
+                      ></textarea>
+                    </div>
+                  {/if}
                   <div class="field">
                     <span class="label">Username</span>
                     <input bind:value={openSecret.username} />

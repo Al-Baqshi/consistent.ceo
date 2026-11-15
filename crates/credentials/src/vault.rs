@@ -73,7 +73,8 @@ use crate::crypto::{
     unwrap_key, wrap_key,
 };
 use crate::model::{
-    AuditEntry, ItemSecret, ItemSummary, NewItem, PlainItem, ShareEnvelope, VaultExport, VaultItem,
+    AuditEntry, ItemKind, ItemSecret, ItemSummary, LoginMatch, NewItem, PlainItem, ShareEnvelope,
+    VaultExport, VaultItem,
 };
 use crate::recovery::{self, RecoveryCode};
 use crate::scope::{Scope, validate_env_key};
@@ -380,7 +381,11 @@ impl Vault {
             extra: serde_json::Map::new(),
         };
 
-        write_atomic(&self.vault_path, &serde_json::to_vec_pretty(&file)?)?;
+        // Create-only: a second `init` racing this one (a double tap, a client
+        // retry) must fail rather than replace a vault whose recovery code was
+        // just shown to someone, which would leave them holding a code that
+        // opens nothing.
+        write_new_atomic(&self.vault_path, &serde_json::to_vec_pretty(&file)?)?;
         *self.state.write().unwrap() = Some(Unlocked { user_key, payload });
         Ok(InitOutcome { recovery_code })
     }
@@ -470,7 +475,7 @@ impl Vault {
         self.finish_unlock(&file, &matched, &key)
     }
 
-    /// Shared tail of every unlock path: unwrap, decrypt, publish state.
+    /// Shared tail of every unlock path: unwrap, publish state, note the unlock.
     fn finish_unlock(&self, file: &VaultFile, method_id: &str, wrapping: &SecretKey) -> Result<()> {
         let method = file
             .unlock_methods
@@ -479,32 +484,58 @@ impl Vault {
             .ok_or_else(|| anyhow!("unknown unlock method"))?;
 
         let user_key = unwrap_key(wrapping, &method.wrapped_user_key)?;
-        let mut payload = open_payload(&user_key, &file.payload)?;
-        payload.normalize();
-
-        *self.state.write().unwrap() = Some(Unlocked { user_key, payload });
+        let label = method.label.clone();
+        self.publish(user_key)?;
 
         // Best-effort: a vault on read-only media still opens, it just cannot
         // record that it did. Failing the unlock over a bookkeeping write would
         // turn a recoverable annoyance into a lockout.
-        let label = method.label.clone();
         if let Err(e) = self.note_unlock(method_id, &label) {
             tracing::debug!(error = %e, "could not record vault unlock");
         }
         Ok(())
     }
 
-    /// Stamp `last_used_at` and append an audit entry for a successful unlock.
-    fn note_unlock(&self, method_id: &str, label: &str) -> Result<()> {
-        self.mutate(|payload| {
-            payload.record("vault.unlocked", Some(label.to_string()));
-            Ok(())
-        })?;
-        let mut file = self.read_file()?;
-        if let Some(m) = file.unlock_methods.iter_mut().find(|m| m.id == method_id) {
-            m.last_used_at = Some(Utc::now().to_rfc3339());
+    /// Make `user_key` the unlocked state, without ever going back in time.
+    ///
+    /// Every unlock path reads the file *before* its slow part (Argon2id takes a
+    /// noticeable fraction of a second), so the copy it holds can be older than
+    /// a save that landed meanwhile. Publishing that copy used to replace the
+    /// newer payload in memory, and the next write put it on disk: the phone
+    /// unlocking with Face ID while the desktop saved a login undid the save,
+    /// after the save had reported success. So:
+    ///
+    /// - already unlocked: the key only has to match; the payload in memory is
+    ///   the current one and stays;
+    /// - locked: the file is read again *under the state lock*, the same lock
+    ///   every save holds for its whole read-modify-write, so nothing can land
+    ///   between this read and the publish.
+    fn publish(&self, user_key: SecretKey) -> Result<()> {
+        let mut guard = self.state.write().unwrap();
+        if let Some(state) = guard.as_ref() {
+            if state.user_key.expose() == user_key.expose() {
+                return Ok(());
+            }
+            bail!("that key does not open this vault");
         }
-        self.write_file(&file)
+        let file = self.read_file()?;
+        let mut payload = open_payload(&user_key, &file.payload)?;
+        payload.normalize();
+        *guard = Some(Unlocked { user_key, payload });
+        Ok(())
+    }
+
+    /// Stamp `last_used_at` and append an audit entry for a successful unlock,
+    /// in one write.
+    fn note_unlock(&self, method_id: &str, label: &str) -> Result<()> {
+        let (method_id, label) = (method_id.to_string(), label.to_string());
+        self.update(move |file, payload| {
+            payload.record("vault.unlocked", Some(label));
+            if let Some(m) = file.unlock_methods.iter_mut().find(|m| m.id == method_id) {
+                m.last_used_at = Some(Utc::now().to_rfc3339());
+            }
+            Ok(())
+        })
     }
 
     /// Re-derive the master key under a fresh salt and rewrap the `user_key`.
@@ -514,37 +545,43 @@ impl Vault {
         if new.is_empty() {
             bail!("master password must not be empty");
         }
-        // Verify the current password by unlocking rather than trusting session state.
-        self.unlock(current)
-            .context("current master password is incorrect")?;
-
-        let mut file = self.read_file()?;
-        let user_key = self.user_key()?;
-
-        let existing_kdf = file
+        // Verify the current password against the file rather than trusting
+        // session state, but without unlocking again: an unlock publishes, and
+        // this used to republish a copy read before the derivation below.
+        let file = self.read_file()?;
+        let method = file
             .unlock_methods
             .iter()
             .find(|m| m.kind == UnlockKind::MasterPassword)
-            .and_then(|m| m.kdf.clone())
-            .unwrap_or_else(KdfParams::recommended);
-        let kdf = existing_kdf.with_fresh_salt();
-        let master_key = kdf.derive(new)?;
-        let wrapped = wrap_key(&master_key.derive_subkey(CTX_USER_KEY_WRAP), &user_key)?;
+            .ok_or_else(|| anyhow!("vault has no master-password unlock method"))?;
+        let kdf = method.kdf.clone().ok_or_else(|| {
+            anyhow!("master-password unlock method is missing its KDF parameters")
+        })?;
+        let user_key = unwrap_key(
+            &kdf.derive(current)?.derive_subkey(CTX_USER_KEY_WRAP),
+            &method.wrapped_user_key,
+        )
+        .context("current master password is incorrect")?;
+        // A locked vault is opened by the password just proven; an unlocked one
+        // must be the vault this password opens.
+        self.publish(user_key.clone())
+            .context("current master password is incorrect")?;
 
-        match file
-            .unlock_methods
-            .iter_mut()
-            .find(|m| m.kind == UnlockKind::MasterPassword)
-        {
-            Some(method) => {
-                method.wrapped_user_key = wrapped;
-                method.kdf = Some(kdf);
-            }
-            None => bail!("vault has no master-password unlock method"),
-        }
-
-        self.write_file(&file)?;
-        self.mutate(|payload| {
+        let new_kdf = kdf.with_fresh_salt();
+        let wrapped = wrap_key(
+            &new_kdf.derive(new)?.derive_subkey(CTX_USER_KEY_WRAP),
+            &user_key,
+        )?;
+        // The new wrapping and its audit entry land in one write, so a lock in
+        // between cannot report a failure for a change that already happened.
+        self.update(move |file, payload| {
+            let method = file
+                .unlock_methods
+                .iter_mut()
+                .find(|m| m.kind == UnlockKind::MasterPassword)
+                .ok_or_else(|| anyhow!("vault has no master-password unlock method"))?;
+            method.wrapped_user_key = wrapped;
+            method.kdf = Some(new_kdf);
             payload.record("vault.password-changed", None);
             Ok(())
         })
@@ -586,9 +623,7 @@ impl Vault {
 
         let user_key = self.user_key()?;
         let id = uuid::Uuid::new_v4().to_string();
-        let mut file = self.read_file()?;
-
-        file.unlock_methods.push(UnlockMethod {
+        let method = UnlockMethod {
             id: id.clone(),
             kind,
             label: label.to_string(),
@@ -597,11 +632,15 @@ impl Vault {
             params,
             created_at: Utc::now().to_rfc3339(),
             last_used_at: None,
-        });
-        self.write_file(&file)?;
+        };
 
+        // One write under the state lock: enrolling used to rewrite the file
+        // outside it, so a save landing at the same moment could drop the new
+        // way in (the client is told its id, the next unlock with it fails), or
+        // the enrolment could roll the save back on disk.
         let label = label.to_string();
-        self.mutate(move |payload| {
+        self.update(move |file, payload| {
+            file.unlock_methods.push(method);
             payload.record("unlock-method.added", Some(label));
             Ok(())
         })?;
@@ -627,24 +666,18 @@ impl Vault {
     /// credential in here", and no confirmation dialog is a reliable substitute
     /// for making it impossible.
     pub fn remove_unlock_method(&self, method_id: &str) -> Result<()> {
-        // Unlocked-only: revoking access is exactly the operation an attacker
-        // holding a stolen session would reach for.
-        if !self.is_unlocked() {
-            bail!("vault is locked");
-        }
-
-        let mut file = self.read_file()?;
-        if file.unlock_methods.len() <= 1 {
-            bail!("this is the only way into the vault; add another before removing it");
-        }
-        let Some(index) = file.unlock_methods.iter().position(|m| m.id == method_id) else {
-            bail!("unlock method not found: {method_id}");
-        };
-
-        let removed = file.unlock_methods.remove(index);
-        self.write_file(&file)?;
-        self.mutate(move |payload| {
-            payload.record("unlock-method.removed", Some(removed.label.clone()));
+        // Unlocked-only (`update` refuses a locked vault): revoking access is
+        // exactly the operation an attacker holding a stolen session would reach for.
+        let method_id = method_id.to_string();
+        self.update(move |file, payload| {
+            if file.unlock_methods.len() <= 1 {
+                bail!("this is the only way into the vault; add another before removing it");
+            }
+            let Some(index) = file.unlock_methods.iter().position(|m| m.id == method_id) else {
+                bail!("unlock method not found: {method_id}");
+            };
+            let removed = file.unlock_methods.remove(index);
+            payload.record("unlock-method.removed", Some(removed.label));
             Ok(())
         })
     }
@@ -827,6 +860,43 @@ impl Vault {
             .filter(|item| scope.is_none_or(|s| &item.scope == s))
             .map(ItemSummary::from)
             .collect())
+    }
+
+    /// The logins in one set that belong on a web address, best fit first:
+    /// the site itself before a subdomain, then favourites, then by name. Only
+    /// that set, with no fallback to global: an entity's accounts are its own,
+    /// and the CEO's personal logins are not offered in an entity's browser.
+    /// Nothing is decrypted.
+    pub fn find_logins(&self, scope: &Scope, address: &str) -> Result<Vec<LoginMatch>> {
+        let guard = self.state.read().unwrap();
+        let state = guard.as_ref().ok_or_else(locked_err)?;
+        let Some(page_host) = crate::uri::site_host(address) else {
+            return Ok(Vec::new());
+        };
+        let mut found: Vec<LoginMatch> = state
+            .payload
+            .items
+            .iter()
+            .filter(|item| item.kind == ItemKind::Login && &item.scope == scope)
+            .filter_map(|item| {
+                let fit = item
+                    .uris
+                    .iter()
+                    .filter_map(|saved| crate::uri::site_match(saved, &page_host))
+                    .max()?;
+                Some(LoginMatch {
+                    item: ItemSummary::from(item),
+                    fit,
+                })
+            })
+            .collect();
+        found.sort_by(|a, b| {
+            b.fit
+                .cmp(&a.fit)
+                .then(b.item.favorite.cmp(&a.item.favorite))
+                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()))
+        });
+        Ok(found)
     }
 
     /// Every entity that currently holds at least one item, plus how many, so a
@@ -1381,18 +1451,6 @@ impl Vault {
         self.parse_file(&bytes)
     }
 
-    /// Persist a file struct, stamping it at the current format version.
-    ///
-    /// This is where a version 2 file quietly becomes a version 3 one: it is only
-    /// ever called after a successful unlock, so the upgrade cannot strand a file
-    /// the caller could not already read.
-    fn write_file(&self, file: &VaultFile) -> Result<()> {
-        self.back_up_before_upgrade(file.version);
-        let mut file = file.clone();
-        file.version = FORMAT_VERSION;
-        write_atomic(&self.vault_path, &serde_json::to_vec_pretty(&file)?)
-    }
-
     /// Keep a copy of the old file the first time a vault is written at a new
     /// format version.
     ///
@@ -1439,17 +1497,30 @@ impl Vault {
     where
         F: FnOnce(&mut Payload) -> Result<()>,
     {
+        self.update(|_, payload| f(payload))
+    }
+
+    /// The one way the file is changed once a vault is open: read it, change
+    /// the file and the decrypted payload together, write once. The state lock
+    /// is held for the whole read-modify-write, so two changes can never
+    /// interleave and lose one another, whichever part of the file they touch
+    /// (an enrolled passkey, a saved login, an unlock stamp).
+    ///
+    /// This is also where a version 2 file quietly becomes a version 3 one: it
+    /// only ever runs on an unlocked vault, so the upgrade cannot strand a file
+    /// the caller could not already read. The in-memory payload changes only
+    /// after the write succeeds.
+    fn update<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut VaultFile, &mut Payload) -> Result<()>,
+    {
         let mut guard = self.state.write().unwrap();
         let state = guard.as_mut().ok_or_else(locked_err)?;
 
+        let mut file = self.read_file()?;
         let mut next = state.payload.clone();
-        f(&mut next)?;
+        f(&mut file, &mut next)?;
 
-        let mut file = {
-            let bytes = std::fs::read(&self.vault_path)
-                .with_context(|| format!("read vault file {:?}", self.vault_path))?;
-            serde_json::from_slice::<VaultFile>(&bytes).context("parse vault file")?
-        };
         self.back_up_before_upgrade(file.version);
         file.version = FORMAT_VERSION;
         file.payload = seal_payload(&state.user_key, &next)?;
@@ -1589,12 +1660,52 @@ fn open_payload(user_key: &SecretKey, sealed: &Sealed) -> Result<Payload> {
 /// write is the correct trade for a file whose loss means losing every credential
 /// the user owns.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let (parent, tmp) = write_temp_beside(path, bytes)?;
+
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("replace vault file {path:?}"));
+    }
+
+    sync_dir(&parent);
+    Ok(())
+}
+
+/// [`write_atomic`] for a file that must not exist yet. The finished file is
+/// hard-linked into place, which fails if anything is already there, where a
+/// rename would silently replace it.
+fn write_new_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let (parent, tmp) = write_temp_beside(path, bytes)?;
+
+    let linked = std::fs::hard_link(&tmp, path);
+    let outcome = match linked {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(anyhow!("Vault file already exists at {path:?}"))
+        }
+        // A filesystem without hard links: the check-then-rename this replaced,
+        // which is still create-only short of two processes racing.
+        Err(_) if !path.exists() => std::fs::rename(&tmp, path)
+            .with_context(|| format!("create vault file {path:?}")),
+        Err(_) => Err(anyhow!("Vault file already exists at {path:?}")),
+    };
+    let _ = std::fs::remove_file(&tmp);
+    outcome?;
+
+    sync_dir(&parent);
+    Ok(())
+}
+
+/// Write `bytes` to a fresh temporary file beside `path`, fsynced and `0600`,
+/// returning the directory and the temporary file.
+fn write_temp_beside(path: &Path, bytes: &[u8]) -> Result<(PathBuf, PathBuf)> {
     use std::io::Write;
 
     let parent = path
         .parent()
-        .ok_or_else(|| anyhow!("vault path has no parent directory"))?;
-    std::fs::create_dir_all(parent).context("create vault directory")?;
+        .ok_or_else(|| anyhow!("vault path has no parent directory"))?
+        .to_path_buf();
+    std::fs::create_dir_all(&parent).context("create vault directory")?;
 
     let file_name = path
         .file_name()
@@ -1620,21 +1731,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             return Err(e).context("restrict vault file permissions to 0600");
         }
     }
+    Ok((parent, tmp))
+}
 
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e).with_context(|| format!("replace vault file {path:?}"));
-    }
-
-    // Also sync the directory, so the rename itself survives a crash. Best
-    // effort: some platforms and filesystems refuse to open a directory for
-    // this, and failing the write over it would be worse than the risk.
+/// Sync the directory too, so a rename or link itself survives a crash. Best
+/// effort: some platforms and filesystems refuse to open a directory for this,
+/// and failing the write over it would be worse than the risk.
+fn sync_dir(dir: &Path) {
     #[cfg(unix)]
-    if let Ok(dir) = std::fs::File::open(parent) {
+    if let Ok(dir) = std::fs::File::open(dir) {
         let _ = dir.sync_all();
     }
-
-    Ok(())
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Format-internal tests.
@@ -1897,5 +2006,266 @@ mod tests {
         let json = serde_json::to_string(&method).unwrap();
         let back: UnlockMethod = serde_json::from_str(&json).unwrap();
         assert_eq!(back.params["somethingFromTheFuture"], "keep-me");
+    }
+
+    // ---- concurrent changes ------------------------------------------------------
+    //
+    // Each of these lost data before: a save reported success and then vanished,
+    // or a way in was enrolled and then missing. The stale-copy races are driven
+    // through the unlock's own steps, so they fail deterministically rather than
+    // when a thread happens to be slow.
+
+    use std::sync::Arc;
+
+    fn names(vault: &Vault) -> Vec<String> {
+        vault
+            .list_items(None)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.name)
+            .collect()
+    }
+
+    fn names_on_disk(path: &Path) -> Vec<String> {
+        let vault = Vault::new(path.to_path_buf());
+        vault.unlock("master").unwrap();
+        names(&vault)
+    }
+
+    /// An open vault with a device key enrolled, as a phone would have.
+    fn vault_with_device_key(dir: &tempfile::TempDir) -> (Vault, PathBuf, String, SecretKey) {
+        let path = dir.path().join("vault.json");
+        let vault = Vault::new(path.clone());
+        vault.init("master").unwrap();
+        let key = SecretKey::generate();
+        let method = vault
+            .add_key_unlock_method(UnlockKind::DeviceKey, "Phone", &key, BTreeMap::new())
+            .unwrap();
+        (vault, path, method, key)
+    }
+
+    #[test]
+    fn an_unlock_that_read_the_file_before_a_save_does_not_undo_it() {
+        // The phone unlocks with Face ID while the desktop saves a login. The
+        // unlock read the file before its slow part; the save landed meanwhile.
+        let dir = tempfile::tempdir().unwrap();
+        let (vault, path, method, key) = vault_with_device_key(&dir);
+
+        let read_by_the_unlock = vault.read_file().unwrap();
+        vault
+            .add_item(NewItem::login("Lebalist Instagram", "owner", "pw"))
+            .unwrap();
+        vault
+            .finish_unlock(&read_by_the_unlock, &method, &key.derive_subkey(CTX_USER_KEY_WRAP))
+            .unwrap();
+
+        assert_eq!(names(&vault), vec!["Lebalist Instagram"], "kept in memory");
+        assert_eq!(names_on_disk(&path), vec!["Lebalist Instagram"], "kept on disk");
+    }
+
+    #[test]
+    fn unlocking_a_locked_vault_publishes_the_file_as_it_is_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let (vault, path, method, key) = vault_with_device_key(&dir);
+        let read_by_the_unlock = vault.read_file().unwrap();
+        vault
+            .add_item(NewItem::login("Lebalist X", "owner", "pw"))
+            .unwrap();
+        vault.lock();
+
+        vault
+            .finish_unlock(&read_by_the_unlock, &method, &key.derive_subkey(CTX_USER_KEY_WRAP))
+            .unwrap();
+        assert_eq!(names(&vault), vec!["Lebalist X"]);
+        assert_eq!(names_on_disk(&path), vec!["Lebalist X"]);
+    }
+
+    #[test]
+    fn a_key_for_another_vault_does_not_replace_the_open_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (vault, _path, method, _key) = vault_with_device_key(&dir);
+        vault.add_item(NewItem::login("Mine", "me", "pw")).unwrap();
+        let mut file = vault.read_file().unwrap();
+        // A method that wraps some other vault's key.
+        let foreign = SecretKey::generate();
+        let wrapping = SecretKey::generate();
+        file.unlock_methods
+            .iter_mut()
+            .find(|m| m.id == method)
+            .unwrap()
+            .wrapped_user_key = wrap_key(&wrapping, &foreign).unwrap();
+        assert!(vault.finish_unlock(&file, &method, &wrapping).is_err());
+        assert_eq!(names(&vault), vec!["Mine"]);
+    }
+
+    #[test]
+    fn enrolling_a_way_in_while_saving_loses_neither() {
+        // Before, enrolment rewrote the file outside the save lock: the audit's
+        // probe lost 24 of 40 enrolled methods this way.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.json");
+        let vault = Arc::new(Vault::new(path.clone()));
+        vault.init("master").unwrap();
+
+        let rounds = 12;
+        let mut enrolled = Vec::new();
+        for i in 0..rounds {
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let (v, b) = (vault.clone(), barrier.clone());
+            let enrol = std::thread::spawn(move || {
+                b.wait();
+                v.add_key_unlock_method(
+                    UnlockKind::DeviceKey,
+                    &format!("Device {i}"),
+                    &SecretKey::generate(),
+                    BTreeMap::new(),
+                )
+                .unwrap()
+            });
+            barrier.wait();
+            vault.set(&format!("KEY_{i}"), "value").unwrap();
+            enrolled.push(enrol.join().unwrap());
+        }
+
+        let reopened = Vault::new(path);
+        reopened.unlock("master").unwrap();
+        let methods: Vec<String> = reopened
+            .unlock_methods()
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        for id in &enrolled {
+            assert!(methods.contains(id), "enrolled method {id} is in the file");
+        }
+        let keys = reopened.list_keys().unwrap();
+        for i in 0..rounds {
+            assert!(keys.contains(&format!("KEY_{i}")), "KEY_{i} is in the file");
+        }
+    }
+
+    #[test]
+    fn changing_the_master_password_keeps_what_was_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.json");
+        let vault = Vault::new(path.clone());
+        vault.init("master").unwrap();
+        vault.add_item(NewItem::login("Lebalist X", "owner", "pw")).unwrap();
+
+        assert!(vault.change_master_password("wrong", "other").is_err());
+        vault.change_master_password("master", "new master").unwrap();
+        assert_eq!(names(&vault), vec!["Lebalist X"]);
+        assert!(
+            vault
+                .audit_log()
+                .unwrap()
+                .iter()
+                .any(|e| e.action == "vault.password-changed")
+        );
+
+        let reopened = Vault::new(path);
+        assert!(reopened.unlock("master").is_err(), "the old password no longer opens it");
+        reopened.unlock("new master").unwrap();
+        assert_eq!(names(&reopened), vec!["Lebalist X"]);
+    }
+
+    #[test]
+    fn changing_the_password_of_a_locked_vault_opens_it_with_the_password_proven() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.json");
+        let vault = Vault::new(path.clone());
+        vault.init("master").unwrap();
+        vault.lock();
+        vault.change_master_password("master", "new master").unwrap();
+        assert!(vault.is_unlocked());
+        let reopened = Vault::new(path);
+        reopened.unlock("new master").unwrap();
+    }
+
+    #[test]
+    fn an_entitys_logins_are_found_for_a_page_and_no_one_elses() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().join("vault.json"));
+        vault.init("master").unwrap();
+        let lebalist = Scope::entity("lebalist").unwrap();
+        let other = Scope::entity("other").unwrap();
+        let save = |kind: ItemKind, name: &str, scope: &Scope, uris: &[&str]| {
+            vault
+                .add_item(NewItem {
+                    kind,
+                    name: name.to_string(),
+                    scope: scope.clone(),
+                    folder: None,
+                    uris: uris.iter().map(|u| u.to_string()).collect(),
+                    favorite: false,
+                    secret: ItemSecret::default(),
+                })
+                .unwrap();
+        };
+        save(ItemKind::Login, "Instagram", &lebalist, &["https://www.instagram.com/accounts/login/"]);
+        save(ItemKind::Login, "Instagram help", &lebalist, &["help.instagram.com"]);
+        save(ItemKind::Login, "X", &lebalist, &["x.com"]);
+        save(ItemKind::SecureNote, "Instagram recovery codes", &lebalist, &["instagram.com"]);
+        save(ItemKind::Login, "Other's Instagram", &other, &["instagram.com"]);
+        save(ItemKind::Login, "My own Instagram", &Scope::Global, &["instagram.com"]);
+
+        let found = |url: &str| -> Vec<String> {
+            vault
+                .find_logins(&lebalist, url)
+                .unwrap()
+                .into_iter()
+                .map(|m| m.item.name)
+                .collect()
+        };
+        assert_eq!(found("https://www.instagram.com/lebalist"), vec!["Instagram"]);
+        // Both fit on the help site; the login saved for it ranks first.
+        assert_eq!(found("https://help.instagram.com/x"), vec!["Instagram help", "Instagram"]);
+        assert!(found("https://instagram.com.evil.example").is_empty());
+        assert!(found("not a web address").is_empty());
+        vault.lock();
+        assert!(vault.find_logins(&lebalist, "https://x.com").is_err());
+    }
+
+    #[test]
+    fn creating_a_vault_never_replaces_one_that_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.json");
+        write_new_atomic(&path, b"first").unwrap();
+        assert!(write_new_atomic(&path, b"second").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        // No temporary file is left behind either way.
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn two_inits_at_once_leave_one_vault_and_a_recovery_code_that_opens_it() {
+        // A double tap: both requests pass the "does it exist" check before
+        // either has written. Before, both succeeded with different recovery
+        // codes and only one of them opened the vault.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.json");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let attempts: Vec<_> = (0..2)
+            .map(|_| {
+                let (path, barrier) = (path.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Vault::new(path)
+                        .init("master")
+                        .map(|outcome| outcome.recovery_code.formatted().to_string())
+                })
+            })
+            .collect();
+        let codes: Vec<String> = attempts
+            .into_iter()
+            .filter_map(|t| t.join().unwrap().ok())
+            .collect();
+        assert_eq!(codes.len(), 1, "exactly one init succeeds");
+        let vault = Vault::new(path);
+        vault.unlock_with_recovery_code(&codes[0]).unwrap();
     }
 }

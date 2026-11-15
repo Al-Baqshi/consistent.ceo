@@ -5,6 +5,7 @@
   import EntityImportModal from '$lib/components/EntityImportModal.svelte';
   import EntityKnowledgeCard from '$lib/components/EntityKnowledgeCard.svelte';
   import EntityBrowserCard from '$lib/components/EntityBrowserCard.svelte';
+  import EntityAccountsCard from '$lib/components/EntityAccountsCard.svelte';
   import {
     applyEnrichment,
     connectGithubToken,
@@ -2345,6 +2346,14 @@
             </form>
             {#if sitesError}<p class="mission-error">{sitesError}</p>{/if}
           </div>
+          {#key entity.id}
+            <EntityAccountsCard
+              entityId={entity.id}
+              entityName={entity.name}
+              sites={browserSites}
+              isPersonal={entity.isPersonal ?? false}
+            />
+          {/key}
         </section>
       {:else if entityTab === 'records'}
         <section class="entity-tab-panel entity-stack-card" id="panel-records">

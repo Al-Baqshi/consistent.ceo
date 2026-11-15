@@ -30,4 +30,6 @@ pub mod scope;
 pub mod strength;
 /// RFC 6238 time-based one-time passwords.
 pub mod totp;
+/// Which saved logins belong to a web address.
+pub mod uri;
 pub mod vault;

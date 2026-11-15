@@ -3338,9 +3338,16 @@ pub fn control_routes(state: ServerState) -> Router {
         .route("/api/pair/payload", get(get_pair_payload))
         .route("/api/remote/status", get(get_remote_status))
         .route("/api/remote/setup", post(setup_remote_access))
-        .route("/api/browser", get(get_browser))
-        .route("/api/browser/open", post(open_browser))
-        .route("/api/browser/close", post(close_browser))
+        .route("/api/browser", get(get_browsers))
+        .route("/api/entities/{id}/browser", get(get_entity_browser))
+        .route(
+            "/api/entities/{id}/browser/open",
+            post(open_entity_browser),
+        )
+        .route(
+            "/api/entities/{id}/browser/close",
+            post(close_entity_browser),
+        )
         .route(
             "/api/entities/{id}/browser-sites",
             put(set_entity_browser_sites),

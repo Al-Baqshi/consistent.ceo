@@ -902,6 +902,150 @@ async fn repeated_wrong_passwords_are_throttled_with_429() {
     );
 }
 
+/// [`build_app`] on a gateway that has entities, as production always does, so
+/// filing under an entity is checked against real ones.
+async fn build_app_with_entities(entities: &[(&str, &str)]) -> (axum::Router, TempDir) {
+    use consistent_world_gateway::state::{ControlState, Entity};
+    let dir = tempfile::tempdir().unwrap();
+    let memory: Arc<dyn MemoryStore> =
+        Arc::new(SurrealMemoryStore::connect_memory().await.unwrap());
+    let vaults = Arc::new(VaultManager::new(dir.path().to_path_buf()));
+    let control = Arc::new(ControlState::new(
+        "openai",
+        "https://api.openai.com/v1",
+        "gpt-4o-mini",
+    ));
+    {
+        let mut list = control.entities.write().await;
+        for (id, name) in entities {
+            list.push(Entity {
+                id: id.to_string(),
+                name: name.to_string(),
+                owner: Some("default".to_string()),
+                status: "Active".to_string(),
+                ..Default::default()
+            });
+        }
+    }
+    let state = ServerState::new("test".into(), Some(TOKEN.into()), memory)
+        .with_vault_manager(vaults)
+        .with_control_state(control);
+    (server::build_router(state), dir)
+}
+
+#[tokio::test]
+async fn passwords_are_filed_only_under_real_entities_and_found_by_site() {
+    let (app, _dir) = build_app_with_entities(&[("lebalist-id", "Lebalist")]).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/vault/init",
+        Some(json!({ "masterPassword": "correct horse battery" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A typo, or another case, is no entity: refused, rather than filed where
+    // nothing would ever look.
+    for wrong in ["entity:lebalist-ID", "entity:no-such-entity"] {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/api/vault/items",
+            Some(json!({ "kind": "login", "name": "Instagram", "scope": wrong })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{wrong}: {body}");
+    }
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/vault/items",
+        Some(json!({
+            "kind": "login",
+            "name": "Lebalist Instagram",
+            "scope": "entity:lebalist-id",
+            "uris": ["https://www.instagram.com/accounts/login/"],
+            "secret": { "username": "lebalist", "password": "pw-1", "notes": "keep" }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Moving and importing check the target the same way.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        &format!("/api/vault/items/{id}/scope"),
+        Some(json!({ "scope": "entity:gone" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/vault/import/csv",
+        Some(json!({ "csv": "name,url,username,password\nX,https://x.com,u,p\n", "commit": false, "scope": "entity:gone" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The scope list names the entity instead of showing its id.
+    let (_, body) = call(&app, "GET", "/api/vault/item-scopes", None).await;
+    let scopes = body["scopes"].as_array().unwrap();
+    let row = scopes
+        .iter()
+        .find(|s| s["scope"] == "entity:lebalist-id")
+        .expect("Lebalist's set is listed");
+    assert_eq!(row["label"], "Lebalist");
+
+    // The login is found for the site, in Lebalist's set only.
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/vault/items/match?scope=entity:lebalist-id&url=https%3A%2F%2Fwww.instagram.com%2Flebalist",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let found = body["items"].as_array().unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["name"], "Lebalist Instagram");
+    assert_eq!(found[0]["fit"], "host");
+    let (_, body) = call(
+        &app,
+        "GET",
+        "/api/vault/items/match?scope=global&url=https%3A%2F%2Finstagram.com",
+        None,
+    )
+    .await;
+    assert!(body["items"].as_array().unwrap().is_empty(), "not offered outside its entity");
+
+    // A body of the wrong shape is refused instead of wiping the item.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        &format!("/api/vault/items/{id}"),
+        Some(json!({ "kind": "login", "name": "x", "secret": { "password": "pw-2" } })),
+    )
+    .await;
+    assert!(status.is_client_error(), "a create-shaped body is refused, got {status}");
+    let (_, secret) = call(&app, "GET", &format!("/api/vault/items/{id}"), None).await;
+    assert_eq!(secret["username"], "lebalist");
+    assert_eq!(secret["password"], "pw-1");
+
+    // Sending back exactly what was fetched, with one change, still saves.
+    let mut edited = secret.clone();
+    edited["password"] = json!("pw-2");
+    let (status, _) = call(&app, "PUT", &format!("/api/vault/items/{id}"), Some(edited)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, secret) = call(&app, "GET", &format!("/api/vault/items/{id}"), None).await;
+    assert_eq!(secret["password"], "pw-2");
+    assert_eq!(secret["notes"], "keep");
+    assert_eq!(secret["passwordHistory"][0]["password"], "pw-1");
+}
+
 #[tokio::test]
 async fn every_vault_route_refuses_a_missing_bearer_token() {
     let (app, _dir) = build_app().await;

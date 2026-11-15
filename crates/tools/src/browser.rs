@@ -231,6 +231,33 @@ struct BrowserSession {
     /// Answers `Fetch.requestPaused` for `page`. Armed when the page is created and torn down
     /// with it; `None` means the page has no boundary and must be re-armed.
     intercept: Option<JoinHandle<()>>,
+    /// The throwaway profile folder this tool made for the browser, removed once it is gone.
+    scratch_profile: Option<PathBuf>,
+}
+
+/// A fresh profile folder for a browser this tool launches without one configured. Chrome lets
+/// one process hold a profile at a time, and chromiumoxide's default is a single shared folder in
+/// the temp dir, so a second throwaway browser (two chats at once, or tests run in parallel)
+/// refused to start: "Failed to create a ProcessSingleton for your profile directory".
+fn scratch_profile_dir() -> std::io::Result<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "consistent-world-browser-{}-{nanos}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn remove_scratch_profile(dir: Option<PathBuf>) {
+    if let Some(dir) = dir {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 impl BrowserSession {
@@ -262,6 +289,7 @@ impl BrowserSession {
             let _ = time::timeout(HEALTH_TIMEOUT, self.browser.kill()).await;
         }
         self.handler.abort();
+        remove_scratch_profile(self.scratch_profile.take());
     }
 
     /// Synchronous best-effort kill, for use from `Drop` where we cannot await.
@@ -275,6 +303,9 @@ impl BrowserSession {
         if let Some(child) = self.browser.get_mut_child() {
             let _ = child.inner.start_kill();
         }
+        // Best effort: Chrome may still be writing as it dies, and the temp dir is the OS's to
+        // clear in the end.
+        remove_scratch_profile(self.scratch_profile.take());
     }
 }
 
@@ -357,6 +388,7 @@ impl BrowserTool {
     }
 
     async fn launch(&self) -> Result<BrowserSession, ActionError> {
+        let mut scratch_profile = None;
         let (browser, mut handler) = if let Some(url) = &self.cdp_url {
             Browser::connect(url.clone()).await.map_err(|e| {
                 (
@@ -397,22 +429,38 @@ impl BrowserTool {
             // logged-in tabs stay out of an unattended agent's reach.
             if let Some(dir) = env_non_empty("CONSISTENT_WORLD_BROWSER_PROFILE_DIR") {
                 builder = builder.user_data_dir(dir);
+            } else {
+                let dir = scratch_profile_dir().map_err(|e| {
+                    (
+                        "BROWSER_LAUNCH_FAILED",
+                        format!("could not create a profile folder for the browser: {e}"),
+                    )
+                })?;
+                builder = builder.user_data_dir(&dir);
+                scratch_profile = Some(dir);
             }
-            let config = builder.build().map_err(|e| {
-                (
+            let launched = match builder.build() {
+                Ok(config) => Browser::launch(config).await.map_err(|e| {
+                    (
+                        "BROWSER_LAUNCH_FAILED",
+                        format!(
+                            "could not launch Chrome: {e}. Install Chrome/Chromium, or set \
+                             CONSISTENT_WORLD_BROWSER_EXECUTABLE / CONSISTENT_WORLD_BROWSER_CDP_URL."
+                        ),
+                    )
+                }),
+                Err(e) => Err((
                     "BROWSER_LAUNCH_FAILED",
                     format!("invalid browser config: {e}"),
-                )
-            })?;
-            Browser::launch(config).await.map_err(|e| {
-                (
-                    "BROWSER_LAUNCH_FAILED",
-                    format!(
-                        "could not launch Chrome: {e}. Install Chrome/Chromium, or set \
-                         CONSISTENT_WORLD_BROWSER_EXECUTABLE / CONSISTENT_WORLD_BROWSER_CDP_URL."
-                    ),
-                )
-            })?
+                )),
+            };
+            match launched {
+                Ok(pair) => pair,
+                Err(e) => {
+                    remove_scratch_profile(scratch_profile.take());
+                    return Err(e);
+                }
+            }
         };
 
         // Pump the CDP event stream for the life of the browser. Individual errors must NOT stop
@@ -436,6 +484,7 @@ impl BrowserTool {
             handler,
             page: None,
             intercept: None,
+            scratch_profile,
         })
     }
 
@@ -2424,11 +2473,11 @@ mod tests {
         }
     }
 
-    /// Start a real Chrome the way the Consistent browser is started, on `profile`, and return it
+    /// Start a real Chrome the way an entity's browser is started, on `profile`, and return it
     /// with its debugging endpoint.
     async fn start_chrome(profile: &std::path::Path) -> (TestChrome, String) {
         let exe = crate::chrome::find_chrome().expect("a Chrome is installed");
-        crate::chrome::brand_new_profile(profile);
+        crate::chrome::brand_new_profile(profile, "Test entity");
         crate::chrome::clear_devtools_endpoint(profile);
         let child = std::process::Command::new(exe)
             .args(crate::chrome::launch_args(profile, true))

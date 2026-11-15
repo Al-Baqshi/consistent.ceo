@@ -282,6 +282,13 @@ export const listItems = (scope?: string) =>
     `/api/vault/items${scope ? scopeQuery(scope) : ''}`
   ).then((r) => r.items);
 
+/** The logins in one set that belong on a web address, best fit first: the site
+ *  itself, then a subdomain of it. Metadata only. */
+export const matchItems = (scope: string, url: string) =>
+  request<{ items: (ItemSummary & { fit: 'host' | 'subdomain' })[] }>(
+    `/api/vault/items/match?scope=${encodeURIComponent(scope)}&url=${encodeURIComponent(url)}`
+  ).then((r) => r.items);
+
 /** The entities that hold at least one item, for a switcher. */
 export const itemScopes = () =>
   request<{ scopes: ItemScopeSummary[] }>('/api/vault/item-scopes').then((r) => r.scopes);

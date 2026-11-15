@@ -124,6 +124,16 @@ pub struct ItemSummary {
     pub updated_at: String,
 }
 
+/// A saved login that belongs on a web address, and how well it fits (see
+/// [`crate::uri`]).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginMatch {
+    #[serde(flatten)]
+    pub item: ItemSummary,
+    pub fit: crate::uri::SiteMatch,
+}
+
 impl From<&VaultItem> for ItemSummary {
     fn from(item: &VaultItem) -> Self {
         Self {

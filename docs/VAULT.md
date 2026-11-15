@@ -32,6 +32,14 @@ promises and what it does not. If you are changing anything under
   generated in-vault, behind the same unlock.
 - **Migration in.** Reads Bitwarden / Chrome / 1Password / LastPass / Safari CSV
   exports, so existing passwords come across in one file.
+- **A save that succeeded stays saved.** Every change to the vault file is one
+  read-modify-write under a single lock, and an unlock never replaces newer data
+  with the copy it read before deriving its key. (Before 2026-10-20 an unlock or a
+  master-password change overlapping a save undid the save, and enrolling a
+  device at the same moment as a save could drop one of them.)
+- **Filed under real entities only.** An item or variable can only be filed under
+  an entity the caller can see; a mistyped or deleted entity id is refused rather
+  than creating a set nobody will ever look in.
 
 ## What it does not guarantee
 
@@ -174,6 +182,28 @@ deployment, and a one-line opt-in for a personal brain box.
 A locked vault is an ordinary state, not an error: resolution falls straight
 through to env and keyring rather than stalling an unattended run.
 
+### An entity's accounts
+
+Logins are filed the same way: `global` is the CEO's own set, `entity:{id}` is that
+entity's (its social media, its dashboards). Unlike variables, items never fall
+back: an entity's passwords are its own. The API refuses to file anything under an
+entity the caller cannot see (`400`), so a typo cannot create an orphan set. An
+entity's page has a **Browser** tab that lists its accounts next to its own browser
+window, and links to the vault opened on that entity's set.
+
+### Which login belongs to a site
+
+`GET /api/vault/items/match?scope=entity:{id}&url=…` answers "which of this
+entity's accounts is for this page" without decrypting anything
+(`crates/credentials/src/uri.rs`). The rule is the one an entity's browser uses for
+the sites it may visit: a login saved for `instagram.com` matches `instagram.com`
+and its subdomains, never a look-alike (`instagram.com.evil.example`,
+`notinstagram.com`); `www.` and paths are ignored. It is deliberately the
+conservative direction: a login saved on `login.example.com` is not offered on
+`www.example.com`, because telling which domains belong together needs the public
+suffix list and a wrong guess offers one site's password to another. Save a second
+address on the login for that case.
+
 ---
 
 ## Surviving ten years
@@ -272,14 +302,21 @@ prompt, and is distinct from `401`, which means the session expired.
 | `POST` | `/api/vault/recovery-code` |
 
 ### Items
-| Method | Path |
-|---|---|
-| `GET` / `POST` | `/api/vault/items` |
-| `GET` / `PUT` / `DELETE` | `/api/vault/items/{id}` |
-| `PUT` | `/api/vault/items/{id}/metadata` |
+| Method | Path | Notes |
+|---|---|---|
+| `GET` / `POST` | `/api/vault/items` | `?scope=` filters to one set; create takes `scope` |
+| `GET` / `PUT` / `DELETE` | `/api/vault/items/{id}` | `PUT` replaces the whole secret; unknown fields are refused |
+| `PUT` | `/api/vault/items/{id}/metadata` | Name, category, websites, favourite |
+| `PUT` | `/api/vault/items/{id}/scope` | Move to another entity's set |
+| `GET` | `/api/vault/items/{id}/totp` | Current 2FA code; does not count as activity |
+| `GET` | `/api/vault/items/match` | `?scope=&url=`: the set's logins for a page, best fit first |
+| `GET` | `/api/vault/item-scopes` | Sets holding items, labelled with entity names |
+| `POST` | `/api/vault/import/csv` | `{csv, commit, scope}` |
 
 Listing returns metadata only. The secret half requires a second call, so a UI can
-render a list without pulling every password over the wire.
+render a list without pulling every password over the wire. `PUT /items/{id}` takes
+the secret exactly as `GET` returns it: a body of any other shape used to parse as
+an empty secret and wipe the item, and is now refused.
 
 ### Secrets and environments
 | Method | Path | Notes |
@@ -323,8 +360,13 @@ associated-domains entitlement in the app.
 ## Testing
 
 ```bash
-cargo test -p consistent-world-credentials   # 101 tests
+cargo test -p consistent-world-credentials   # 161 tests
+cargo test -p consistent-world-gateway --test vault_api_test
 ```
+
+The concurrency tests in `vault.rs` drive the unlock path's own steps (read the
+file, save, finish the unlock) rather than racing threads, so they fail every time
+the bug is present instead of when a thread happens to be slow.
 
 The migration tests are the ones to keep honest. `write_v2_vault` spells its JSON
 out by hand rather than serializing from the current structs — a test that
